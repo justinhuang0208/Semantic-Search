@@ -1,0 +1,22 @@
+[project]
+name = "semsearch"
+version = "0.1.0"
+description = "Local semantic search for markdown cards using OpenRouter embeddings"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "numpy>=1.26",
+  "requests>=2.31",
+  "PyYAML>=6.0",
+  "faiss-cpu>=1.8.0"
+]
+
+[project.scripts]
+semsearch = "semsearch.cli:main"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["semsearch"]

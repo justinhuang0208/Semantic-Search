@@ -1,0 +1,17 @@
+queries:
+  - query: "非同步 reset"
+    relevant_docs:
+      - "202509132233"
+
+  - query: "non-blocking assignment 跨週期"
+    relevant_docs:
+      - "202509151057"
+
+  - query: "Lemmings4 計數器 回捲"
+    relevant_docs:
+      - "202509181047"
+
+  - query: "guided image filter 變體"
+    relevant_docs:
+      - "Guided image filter 的變體"
+      - "基於 Weight Census Transform 以及 Guided Image Filter 的硬體友好立體匹配演算法"

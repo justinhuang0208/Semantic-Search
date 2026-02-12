@@ -1,0 +1,9 @@
+1 - Cards
+__pycache__/
+*.pyc
+.venv/
+.env
+data_index/*.db
+data_index/*.faiss
+
+semsearch.egg-info/

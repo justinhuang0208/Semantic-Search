@@ -1,0 +1,11 @@
+name: semsearch
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - numpy>=1.26
+      - requests>=2.31
+      - PyYAML>=6.0
+      - faiss-cpu>=1.8.0
