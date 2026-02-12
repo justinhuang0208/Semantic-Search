@@ -5,6 +5,8 @@ import sqlite3
 from collections import defaultdict
 from pathlib import Path
 
+import numpy as np
+
 from .models import ChunkDraft, DocumentRecord
 
 
@@ -74,18 +76,30 @@ class Storage:
                 key TEXT PRIMARY KEY,
                 value REAL NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS embedding_cache (
+                model TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                dim INTEGER NOT NULL,
+                vector_blob BLOB NOT NULL,
+                PRIMARY KEY (model, content_hash)
+            );
             """
         )
         self.conn.commit()
 
-    def clear_for_rebuild(self) -> None:
+    def clear_for_rebuild(self, clear_embedding_cache: bool = False) -> None:
+        cache_sql = ""
+        if clear_embedding_cache:
+            cache_sql = "DELETE FROM embedding_cache;"
         self.conn.executescript(
-            """
+            f"""
             DELETE FROM bm25_terms;
             DELETE FROM bm25_stats;
             DELETE FROM bm25_meta;
             DELETE FROM chunks;
             DELETE FROM documents;
+            {cache_sql}
             """
         )
         self.conn.commit()
@@ -165,6 +179,21 @@ class Storage:
         chunk_count = self.conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
         return int(doc_count), int(chunk_count)
 
+    def document_hashes_by_source(self) -> dict[str, str]:
+        rows = self.conn.execute(
+            "SELECT source_path, content_hash FROM documents"
+        ).fetchall()
+        return {str(row["source_path"]): str(row["content_hash"]) for row in rows}
+
+    def delete_documents_by_source(self, source_paths: list[str]) -> None:
+        if not source_paths:
+            return
+        placeholders = ",".join("?" for _ in source_paths)
+        self.conn.execute(
+            f"DELETE FROM documents WHERE source_path IN ({placeholders})",
+            source_paths,
+        )
+
     def bm25_globals(self) -> tuple[int, float]:
         rows = self.conn.execute("SELECT key, value FROM bm25_meta").fetchall()
         mapping = {row["key"]: row["value"] for row in rows}
@@ -208,6 +237,14 @@ class Storage:
         rows = self.conn.execute("SELECT token_count FROM chunks").fetchall()
         return [int(row["token_count"]) for row in rows]
 
+    def clear_bm25_derived(self) -> None:
+        self.conn.executescript(
+            """
+            DELETE FROM bm25_stats;
+            DELETE FROM bm25_meta;
+            """
+        )
+
     def all_docs_grouped_by_source(self) -> dict[str, list[str]]:
         rows = self.conn.execute(
             "SELECT doc_id, source_path FROM documents ORDER BY source_path"
@@ -216,3 +253,83 @@ class Storage:
         for row in rows:
             grouped[str(row["source_path"])].append(str(row["doc_id"]))
         return dict(grouped)
+
+    def embedding_cache_by_hashes(
+        self,
+        model: str,
+        content_hashes: list[str],
+    ) -> dict[str, np.ndarray]:
+        if not content_hashes:
+            return {}
+        placeholders = ",".join("?" for _ in content_hashes)
+        rows = self.conn.execute(
+            f"""
+            SELECT content_hash, vector_blob
+            FROM embedding_cache
+            WHERE model = ? AND content_hash IN ({placeholders})
+            """,
+            [model, *content_hashes],
+        ).fetchall()
+        output: dict[str, np.ndarray] = {}
+        for row in rows:
+            output[str(row["content_hash"])] = np.frombuffer(
+                row["vector_blob"], dtype=np.float32
+            ).copy()
+        return output
+
+    def upsert_embedding_cache(
+        self,
+        model: str,
+        content_hash: str,
+        vector: np.ndarray,
+    ) -> None:
+        vec = np.asarray(vector, dtype=np.float32)
+        self.conn.execute(
+            """
+            INSERT OR REPLACE INTO embedding_cache (model, content_hash, dim, vector_blob)
+            VALUES (?, ?, ?, ?)
+            """,
+            (model, content_hash, int(vec.shape[0]), vec.tobytes()),
+        )
+
+    def missing_embedding_hashes_with_text(self, model: str) -> dict[str, str]:
+        rows = self.conn.execute(
+            """
+            SELECT c.content_hash, c.text, c.chunk_type, c.context_prefix
+            FROM chunks c
+            LEFT JOIN embedding_cache e
+              ON e.model = ? AND e.content_hash = c.content_hash
+            WHERE e.content_hash IS NULL
+            """,
+            (model,),
+        ).fetchall()
+        missing: dict[str, str] = {}
+        for row in rows:
+            content_hash = str(row["content_hash"])
+            chunk_type = str(row["chunk_type"])
+            text = str(row["text"])
+            context_prefix = str(row["context_prefix"])
+            if chunk_type == "code" and context_prefix:
+                searchable = f"context:\n{context_prefix}\n\ncode:\n{text}"
+            else:
+                searchable = text
+            missing.setdefault(content_hash, searchable)
+        return missing
+
+    def all_chunk_vectors(self, model: str) -> tuple[list[int], list[np.ndarray]]:
+        rows = self.conn.execute(
+            """
+            SELECT c.id AS chunk_id, e.vector_blob
+            FROM chunks c
+            JOIN embedding_cache e
+              ON e.model = ? AND e.content_hash = c.content_hash
+            ORDER BY c.id
+            """,
+            (model,),
+        ).fetchall()
+        ids: list[int] = []
+        vectors: list[np.ndarray] = []
+        for row in rows:
+            ids.append(int(row["chunk_id"]))
+            vectors.append(np.frombuffer(row["vector_blob"], dtype=np.float32).copy())
+        return ids, vectors

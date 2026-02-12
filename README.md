@@ -51,6 +51,29 @@ semsearch ingest --source "1 - Cards" --rebuild
 semsearch ingest --rebuild
 ```
 
+增量更新（推薦日常使用）：
+
+```bash
+semsearch ingest --source "1 - Cards"
+```
+
+- 不帶 `--rebuild` 時，系統會比較檔案內容 hash，只更新新增/變更檔案，並刪除索引中已不存在的檔案。
+- 系統會使用 embedding 快取（`content_hash + model`）避免重複呼叫 API。
+- 即使使用 `--rebuild`，只要內容 hash 曾經快取過，仍會直接重用，不會再次上傳到 embedding API。
+
+### Source 與資料庫路徑的關係
+
+- `--source` 只決定「這次 ingest 要讀哪個資料夾」。
+- 是否為不同資料庫，取決於 `--db-path` 與 `--faiss-path`，不是 `--source`。
+- 若只更換 `--source`、但沿用同一組 `--db-path/--faiss-path`，會覆蓋同一套索引（看不到的舊文件會被當成刪除）。
+
+範例：建立兩套獨立索引（A 與 B）
+
+```bash
+semsearch ingest --source "/path/A" --db-path data_index/A.db --faiss-path data_index/A.faiss
+semsearch ingest --source "/path/B" --db-path data_index/B.db --faiss-path data_index/B.faiss
+```
+
 ## 6. 查詢
 
 ```bash
@@ -86,5 +109,5 @@ semsearch eval --golden tests/golden_queries.yaml --verbose
 ## 10. 注意事項
 
 - `query` 與 `eval` 每次都會對查詢文字呼叫一次 embedding API。
-- `ingest --rebuild` 會重建 SQLite 與 FAISS 索引資料。
+- `ingest` 預設是增量更新；`--rebuild` 會重建文件/BM25/FAISS，但會保留 embedding 快取以降低重建成本。
 - 目前預設只讀取 `source/*.md`，不遞迴子目錄。

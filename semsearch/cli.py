@@ -38,6 +38,13 @@ def cmd_ingest(args: argparse.Namespace) -> int:
         rebuild=args.rebuild,
     )
     print(f"Ingest complete: docs={stats.documents}, chunks={stats.chunks}, dim={stats.embedding_dim}")
+    print(
+        "Delta: "
+        f"updated_docs={stats.updated_documents}, "
+        f"deleted_docs={stats.deleted_documents}, "
+        f"new_embeddings={stats.new_embedding_hashes}, "
+        f"reused_embeddings={stats.reused_embedding_hashes}"
+    )
     print(f"Source: {stats.source}")
     print(f"SQLite: {args.db_path}")
     print(f"FAISS: {args.faiss_path}")

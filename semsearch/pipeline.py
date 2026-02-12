@@ -2,7 +2,6 @@ import math
 from dataclasses import dataclass
 from pathlib import Path
 
-import numpy as np
 import yaml
 
 from .embeddings import OpenRouterEmbedder
@@ -21,6 +20,10 @@ class IngestStats:
     chunks: int
     embedding_dim: int
     source: str
+    updated_documents: int
+    deleted_documents: int
+    new_embedding_hashes: int
+    reused_embedding_hashes: int
 
 
 @dataclass(slots=True)
@@ -59,55 +62,110 @@ def ingest(
         documents.append(doc)
         chunks.extend(drafts)
 
-    embedder = OpenRouterEmbedder(api_key=api_key, model=model)
-
-    unique_hash_to_text: dict[str, str] = {}
-    for chunk in chunks:
-        unique_hash_to_text.setdefault(chunk.content_hash, chunk.search_text)
-
-    hashes = list(unique_hash_to_text.keys())
-    texts = [unique_hash_to_text[h] for h in hashes]
-
-    embedded = embedder.embed_texts(texts, input_type="document")
-    hash_to_vector = {h: vec for h, vec in zip(hashes, embedded.vectors, strict=True)}
-
     storage = Storage(db_path)
     storage.create_schema()
     if rebuild:
         storage.clear_for_rebuild()
 
-    for doc in documents:
-        storage.insert_document(doc)
-
-    vectors: list[np.ndarray] = []
-    ids: list[int] = []
-
+    source_to_doc = {doc.source_path: doc for doc in documents}
+    source_to_chunks: dict[str, list[ChunkDraft]] = {}
     for chunk in chunks:
+        source_to_chunks.setdefault(chunk.source_path, []).append(chunk)
+
+    existing_hash_by_source = storage.document_hashes_by_source()
+
+    current_sources = set(source_to_doc.keys())
+    existing_sources = set(existing_hash_by_source.keys())
+    deleted_sources = sorted(existing_sources - current_sources)
+
+    if rebuild:
+        updated_sources = sorted(current_sources)
+    else:
+        updated_sources = sorted(
+            source_path
+            for source_path, doc in source_to_doc.items()
+            if existing_hash_by_source.get(source_path) != doc.content_hash
+        )
+
+    to_delete_sources = sorted(set(updated_sources) | set(deleted_sources))
+    storage.delete_documents_by_source(to_delete_sources)
+
+    for source_path in updated_sources:
+        storage.insert_document(source_to_doc[source_path])
+
+    chunks_to_insert: list[ChunkDraft] = []
+    for source_path in updated_sources:
+        chunks_to_insert.extend(source_to_chunks.get(source_path, []))
+
+    embedder = OpenRouterEmbedder(api_key=api_key, model=model)
+
+    unique_hash_to_text: dict[str, str] = {}
+    for chunk in chunks_to_insert:
+        unique_hash_to_text.setdefault(chunk.content_hash, chunk.search_text)
+
+    requested_hashes = list(unique_hash_to_text.keys())
+    cached_vectors = storage.embedding_cache_by_hashes(model=model, content_hashes=requested_hashes)
+    missing_hashes = [h for h in requested_hashes if h not in cached_vectors]
+    if missing_hashes:
+        texts = [unique_hash_to_text[h] for h in missing_hashes]
+        embedded = embedder.embed_texts(texts, input_type="document")
+        for content_hash, vector in zip(missing_hashes, embedded.vectors, strict=True):
+            storage.upsert_embedding_cache(model=model, content_hash=content_hash, vector=vector)
+
+    for chunk in chunks_to_insert:
         rowid = storage.insert_chunk(chunk)
         tf = dict(count_terms(chunk.search_text))
         storage.insert_bm25_terms(rowid, tf)
-        vectors.append(hash_to_vector[chunk.content_hash])
-        ids.append(rowid)
 
+    missing_cache = storage.missing_embedding_hashes_with_text(model=model)
+    missing_cache_hashes = [h for h in missing_cache.keys() if h not in missing_hashes]
+    if missing_cache_hashes:
+        texts = [missing_cache[h] for h in missing_cache_hashes]
+        embedded = embedder.embed_texts(texts, input_type="document")
+        for content_hash, vector in zip(missing_cache_hashes, embedded.vectors, strict=True):
+            storage.upsert_embedding_cache(model=model, content_hash=content_hash, vector=vector)
+
+    storage.clear_bm25_derived()
     term_df = storage.compute_term_df()
     token_lengths = storage.token_lengths()
     avgdl = sum(token_lengths) / len(token_lengths) if token_lengths else 0.0
     storage.finalize_bm25(doc_count=len(token_lengths), avgdl=avgdl, term_df=term_df)
     storage.commit()
 
-    index = VectorIndex(faiss_path)
-    if faiss_path.exists() and rebuild:
-        faiss_path.unlink()
-    index.build(vectors=vectors, ids=ids, dim=embedded.dim)
-
     doc_count, chunk_count = storage.counts()
+    ids, vectors = storage.all_chunk_vectors(model=model)
+    if not vectors:
+        storage.close()
+        raise RuntimeError("No vectors available to build FAISS index.")
+    if len(ids) != chunk_count:
+        storage.close()
+        raise RuntimeError(
+            "Chunk/vector count mismatch. Try running ingest with --rebuild once to recover cache."
+        )
+
+    index = VectorIndex(faiss_path)
+    if faiss_path.exists():
+        faiss_path.unlink()
+    index.build(vectors=vectors, ids=ids, dim=len(vectors[0]))
+
     storage.close()
+
+    requested_hash_set = set(requested_hashes)
+    missing_hash_set = set(missing_hashes)
+    reused_hashes = len(requested_hash_set - missing_hash_set)
+    new_hashes = len(missing_hash_set)
+    if missing_cache_hashes:
+        new_hashes += len(missing_cache_hashes)
 
     return IngestStats(
         documents=doc_count,
         chunks=chunk_count,
-        embedding_dim=embedded.dim,
+        embedding_dim=len(vectors[0]),
         source=str(source),
+        updated_documents=len(updated_sources),
+        deleted_documents=len(deleted_sources),
+        new_embedding_hashes=new_hashes,
+        reused_embedding_hashes=reused_hashes,
     )
 
 
