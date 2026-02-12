@@ -11,6 +11,7 @@ DEFAULT_SOURCE = Path("1 - Cards")
 DEFAULT_DB_PATH = Path("data_index/semsearch.db")
 DEFAULT_FAISS_PATH = Path("data_index/semsearch.faiss")
 DEFAULT_MODEL = "google/gemini-embedding-001"
+SOURCE_ENV_VAR = "SEMSEARCH_SOURCE"
 
 
 def _api_key() -> str:
@@ -18,6 +19,13 @@ def _api_key() -> str:
     if not api_key:
         raise RuntimeError("OPENROUTER_API_KEY is not set.")
     return api_key
+
+
+def _default_source() -> str:
+    configured = os.getenv(SOURCE_ENV_VAR, "").strip()
+    if configured:
+        return configured
+    return str(DEFAULT_SOURCE)
 
 
 def cmd_ingest(args: argparse.Namespace) -> int:
@@ -88,7 +96,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_ingest = sub.add_parser("ingest", help="Ingest markdown cards and build indexes")
-    p_ingest.add_argument("--source", default=str(DEFAULT_SOURCE))
+    p_ingest.add_argument(
+        "--source",
+        default=_default_source(),
+        help=f"Markdown folder to ingest (default: {DEFAULT_SOURCE} or ${SOURCE_ENV_VAR})",
+    )
     p_ingest.add_argument("--db-path", default=str(DEFAULT_DB_PATH))
     p_ingest.add_argument("--faiss-path", default=str(DEFAULT_FAISS_PATH))
     p_ingest.add_argument("--model", default=DEFAULT_MODEL)
