@@ -38,6 +38,13 @@ class VectorIndex:
     def search(self, query_vec: np.ndarray, top_k: int) -> list[tuple[int, float]]:
         index = self.load()
         q = np.asarray(query_vec, dtype=np.float32).reshape(1, -1)
+        query_dim = int(q.shape[1])
+        index_dim = int(index.d)
+        if query_dim != index_dim:
+            raise VectorIndexError(
+                f"Query vector dimension {query_dim} does not match FAISS index dimension "
+                f"{index_dim}. Rebuild index with matching embedding provider/model."
+            )
         scores, ids = index.search(q, top_k)
         results: list[tuple[int, float]] = []
         for chunk_id, score in zip(ids[0], scores[0], strict=False):

@@ -84,6 +84,14 @@ class Storage:
                 vector_blob BLOB NOT NULL,
                 PRIMARY KEY (model, content_hash)
             );
+
+            CREATE TABLE IF NOT EXISTS embedding_profile (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                cache_key TEXT NOT NULL,
+                dim INTEGER NOT NULL
+            );
             """
         )
         self.conn.commit()
@@ -99,6 +107,7 @@ class Storage:
             DELETE FROM bm25_meta;
             DELETE FROM chunks;
             DELETE FROM documents;
+            DELETE FROM embedding_profile;
             {cache_sql}
             """
         )
@@ -333,3 +342,35 @@ class Storage:
             ids.append(int(row["chunk_id"]))
             vectors.append(np.frombuffer(row["vector_blob"], dtype=np.float32).copy())
         return ids, vectors
+
+    def upsert_embedding_profile(
+        self,
+        provider: str,
+        model: str,
+        cache_key: str,
+        dim: int,
+    ) -> None:
+        self.conn.execute(
+            """
+            INSERT OR REPLACE INTO embedding_profile (id, provider, model, cache_key, dim)
+            VALUES (1, ?, ?, ?, ?)
+            """,
+            (provider, model, cache_key, dim),
+        )
+
+    def embedding_profile(self) -> dict[str, str | int] | None:
+        row = self.conn.execute(
+            """
+            SELECT provider, model, cache_key, dim
+            FROM embedding_profile
+            WHERE id = 1
+            """
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "provider": str(row["provider"]),
+            "model": str(row["model"]),
+            "cache_key": str(row["cache_key"]),
+            "dim": int(row["dim"]),
+        }

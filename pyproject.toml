@@ -1,7 +1,7 @@
 [project]
 name = "semsearch"
 version = "0.1.0"
-description = "Local semantic search for markdown cards using OpenRouter embeddings"
+description = "Local semantic search for markdown cards using OpenRouter or Ollama embeddings"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

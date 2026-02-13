@@ -4,7 +4,7 @@ from pathlib import Path
 
 import yaml
 
-from .embeddings import OpenRouterEmbedder
+from .embeddings import resolve_embedder
 from .markdown_ingest import parse_markdown
 from .models import ChunkDraft, SearchResult
 from .retrieval import bm25_search, reciprocal_rank_fusion, rerank_with_doc_diversity
@@ -19,6 +19,8 @@ class IngestStats:
     documents: int
     chunks: int
     embedding_dim: int
+    embedding_provider: str
+    embedding_model: str
     source: str
     updated_documents: int
     deleted_documents: int
@@ -43,13 +45,46 @@ def _collect_markdown_files(source: Path) -> list[Path]:
     return files
 
 
+def _ensure_embedding_profile_matches(
+    storage: Storage,
+    *,
+    provider: str,
+    model: str,
+    cache_key: str,
+) -> None:
+    profile = storage.embedding_profile()
+    if profile is None:
+        raise RuntimeError(
+            "Embedding profile is missing for this index. "
+            "Run `semsearch ingest` once to initialize metadata."
+        )
+
+    expected = {
+        "provider": provider,
+        "model": model,
+        "cache_key": cache_key,
+    }
+    mismatches = [
+        f"{key}=expected({value}) actual({profile[key]})"
+        for key, value in expected.items()
+        if str(profile[key]) != value
+    ]
+    if mismatches:
+        mismatch_text = ", ".join(mismatches)
+        raise RuntimeError(
+            "Embedding configuration does not match the indexed vectors: "
+            f"{mismatch_text}. Run `semsearch ingest --rebuild` with the same embedding settings."
+        )
+
+
 def ingest(
     source: Path,
     db_path: Path,
     faiss_path: Path,
-    api_key: str,
+    api_key: str | None,
     model: str,
     rebuild: bool,
+    use_local_embedding: bool = False,
 ) -> IngestStats:
     files = _collect_markdown_files(source)
     if not files:
@@ -97,33 +132,39 @@ def ingest(
     for source_path in updated_sources:
         chunks_to_insert.extend(source_to_chunks.get(source_path, []))
 
-    embedder = OpenRouterEmbedder(api_key=api_key, model=model)
+    runtime = resolve_embedder(
+        use_local_embedding=use_local_embedding,
+        model=model,
+        api_key=api_key,
+    )
+    embedder = runtime.embedder
+    cache_key = runtime.cache_key
 
     unique_hash_to_text: dict[str, str] = {}
     for chunk in chunks_to_insert:
         unique_hash_to_text.setdefault(chunk.content_hash, chunk.search_text)
 
     requested_hashes = list(unique_hash_to_text.keys())
-    cached_vectors = storage.embedding_cache_by_hashes(model=model, content_hashes=requested_hashes)
+    cached_vectors = storage.embedding_cache_by_hashes(model=cache_key, content_hashes=requested_hashes)
     missing_hashes = [h for h in requested_hashes if h not in cached_vectors]
     if missing_hashes:
         texts = [unique_hash_to_text[h] for h in missing_hashes]
         embedded = embedder.embed_texts(texts, input_type="document")
         for content_hash, vector in zip(missing_hashes, embedded.vectors, strict=True):
-            storage.upsert_embedding_cache(model=model, content_hash=content_hash, vector=vector)
+            storage.upsert_embedding_cache(model=cache_key, content_hash=content_hash, vector=vector)
 
     for chunk in chunks_to_insert:
         rowid = storage.insert_chunk(chunk)
         tf = dict(count_terms(chunk.search_text))
         storage.insert_bm25_terms(rowid, tf)
 
-    missing_cache = storage.missing_embedding_hashes_with_text(model=model)
+    missing_cache = storage.missing_embedding_hashes_with_text(model=cache_key)
     missing_cache_hashes = [h for h in missing_cache.keys() if h not in missing_hashes]
     if missing_cache_hashes:
         texts = [missing_cache[h] for h in missing_cache_hashes]
         embedded = embedder.embed_texts(texts, input_type="document")
         for content_hash, vector in zip(missing_cache_hashes, embedded.vectors, strict=True):
-            storage.upsert_embedding_cache(model=model, content_hash=content_hash, vector=vector)
+            storage.upsert_embedding_cache(model=cache_key, content_hash=content_hash, vector=vector)
 
     storage.clear_bm25_derived()
     term_df = storage.compute_term_df()
@@ -133,7 +174,7 @@ def ingest(
     storage.commit()
 
     doc_count, chunk_count = storage.counts()
-    ids, vectors = storage.all_chunk_vectors(model=model)
+    ids, vectors = storage.all_chunk_vectors(model=cache_key)
     if not vectors:
         storage.close()
         raise RuntimeError("No vectors available to build FAISS index.")
@@ -147,6 +188,13 @@ def ingest(
     if faiss_path.exists():
         faiss_path.unlink()
     index.build(vectors=vectors, ids=ids, dim=len(vectors[0]))
+    storage.upsert_embedding_profile(
+        provider=runtime.provider,
+        model=runtime.model,
+        cache_key=cache_key,
+        dim=len(vectors[0]),
+    )
+    storage.commit()
 
     storage.close()
 
@@ -161,6 +209,8 @@ def ingest(
         documents=doc_count,
         chunks=chunk_count,
         embedding_dim=len(vectors[0]),
+        embedding_provider=runtime.provider,
+        embedding_model=runtime.model,
         source=str(source),
         updated_documents=len(updated_sources),
         deleted_documents=len(deleted_sources),
@@ -173,44 +223,58 @@ def search(
     query: str,
     db_path: Path,
     faiss_path: Path,
-    api_key: str,
+    api_key: str | None,
     model: str,
     top_k: int,
     vector_top_k: int = 20,
     bm25_top_k: int = 20,
+    use_local_embedding: bool = False,
 ) -> list[SearchResult]:
     normalized_query = normalize_query_text(query)
     if not normalized_query:
         return []
 
-    embedder = OpenRouterEmbedder(api_key=api_key, model=model)
-    embedded = embedder.embed_texts([normalized_query], input_type="query")
-
-    index = VectorIndex(faiss_path)
-    vector_results = index.search(embedded.vectors[0], top_k=vector_top_k)
+    runtime = resolve_embedder(
+        use_local_embedding=use_local_embedding,
+        model=model,
+        api_key=api_key,
+    )
 
     storage = Storage(db_path)
-    storage.create_schema()
+    try:
+        storage.create_schema()
+        _ensure_embedding_profile_matches(
+            storage,
+            provider=runtime.provider,
+            model=runtime.model,
+            cache_key=runtime.cache_key,
+        )
 
-    bm25_results = bm25_search(storage, normalized_query, top_k=bm25_top_k)
-    fused, vector_rank, bm25_rank = reciprocal_rank_fusion(vector_results, bm25_results, k=60)
-    results = rerank_with_doc_diversity(
-        storage,
-        fused=fused,
-        vector_rank=vector_rank,
-        bm25_rank=bm25_rank,
-        top_k=top_k,
-    )
-    storage.close()
-    return results
+        embedded = runtime.embedder.embed_texts([normalized_query], input_type="query")
+
+        index = VectorIndex(faiss_path)
+        vector_results = index.search(embedded.vectors[0], top_k=vector_top_k)
+
+        bm25_results = bm25_search(storage, normalized_query, top_k=bm25_top_k)
+        fused, vector_rank, bm25_rank = reciprocal_rank_fusion(vector_results, bm25_results, k=60)
+        return rerank_with_doc_diversity(
+            storage,
+            fused=fused,
+            vector_rank=vector_rank,
+            bm25_rank=bm25_rank,
+            top_k=top_k,
+        )
+    finally:
+        storage.close()
 
 
 def evaluate(
     golden_path: Path,
     db_path: Path,
     faiss_path: Path,
-    api_key: str,
+    api_key: str | None,
     model: str,
+    use_local_embedding: bool = False,
 ) -> tuple[EvalStats, list[dict]]:
     data = yaml.safe_load(golden_path.read_text(encoding="utf-8"))
     queries = data.get("queries", [])
@@ -232,6 +296,7 @@ def evaluate(
             faiss_path=faiss_path,
             api_key=api_key,
             model=model,
+            use_local_embedding=use_local_embedding,
             top_k=10,
             vector_top_k=20,
             bm25_top_k=20,

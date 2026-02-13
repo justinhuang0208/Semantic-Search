@@ -4,17 +4,27 @@ import argparse
 import os
 from pathlib import Path
 
+from .embeddings import DEFAULT_OLLAMA_MODEL, DEFAULT_OPENROUTER_MODEL
 from .pipeline import evaluate, ingest, search
 from .utils import snippet
 
 DEFAULT_SOURCE = Path("1 - Cards")
 DEFAULT_DB_PATH = Path("data_index/semsearch.db")
 DEFAULT_FAISS_PATH = Path("data_index/semsearch.faiss")
-DEFAULT_MODEL = "google/gemini-embedding-001"
 SOURCE_ENV_VAR = "SEMSEARCH_SOURCE"
 
 
-def _api_key() -> str:
+def _resolve_model(model: str | None, use_local_embedding: bool) -> str:
+    if model and model.strip():
+        return model.strip()
+    if use_local_embedding:
+        return DEFAULT_OLLAMA_MODEL
+    return DEFAULT_OPENROUTER_MODEL
+
+
+def _api_key(use_local_embedding: bool) -> str | None:
+    if use_local_embedding:
+        return None
     api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("OPENROUTER_API_KEY is not set.")
@@ -29,15 +39,18 @@ def _default_source() -> str:
 
 
 def cmd_ingest(args: argparse.Namespace) -> int:
+    model = _resolve_model(args.model, args.use_local_embedding)
     stats = ingest(
         source=Path(args.source),
         db_path=Path(args.db_path),
         faiss_path=Path(args.faiss_path),
-        api_key=_api_key(),
-        model=args.model,
+        api_key=_api_key(args.use_local_embedding),
+        model=model,
+        use_local_embedding=args.use_local_embedding,
         rebuild=args.rebuild,
     )
     print(f"Ingest complete: docs={stats.documents}, chunks={stats.chunks}, dim={stats.embedding_dim}")
+    print(f"Embedding: provider={stats.embedding_provider}, model={stats.embedding_model}")
     print(
         "Delta: "
         f"updated_docs={stats.updated_documents}, "
@@ -52,12 +65,14 @@ def cmd_ingest(args: argparse.Namespace) -> int:
 
 
 def cmd_query(args: argparse.Namespace) -> int:
+    model = _resolve_model(args.model, args.use_local_embedding)
     results = search(
         query=args.query,
         db_path=Path(args.db_path),
         faiss_path=Path(args.faiss_path),
-        api_key=_api_key(),
-        model=args.model,
+        api_key=_api_key(args.use_local_embedding),
+        model=model,
+        use_local_embedding=args.use_local_embedding,
         top_k=args.top_k,
     )
 
@@ -75,12 +90,14 @@ def cmd_query(args: argparse.Namespace) -> int:
 
 
 def cmd_eval(args: argparse.Namespace) -> int:
+    model = _resolve_model(args.model, args.use_local_embedding)
     stats, details = evaluate(
         golden_path=Path(args.golden),
         db_path=Path(args.db_path),
         faiss_path=Path(args.faiss_path),
-        api_key=_api_key(),
-        model=args.model,
+        api_key=_api_key(args.use_local_embedding),
+        model=model,
+        use_local_embedding=args.use_local_embedding,
     )
 
     print(f"Queries: {stats.queries}")
@@ -110,7 +127,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_ingest.add_argument("--db-path", default=str(DEFAULT_DB_PATH))
     p_ingest.add_argument("--faiss-path", default=str(DEFAULT_FAISS_PATH))
-    p_ingest.add_argument("--model", default=DEFAULT_MODEL)
+    p_ingest.add_argument(
+        "--model",
+        help=(
+            "Embedding model. Defaults to "
+            f"{DEFAULT_OPENROUTER_MODEL} (OpenRouter) or {DEFAULT_OLLAMA_MODEL} (with --use-local-embedding)."
+        ),
+    )
+    p_ingest.add_argument("--use-local-embedding", action="store_true")
     p_ingest.add_argument("--rebuild", action="store_true")
     p_ingest.set_defaults(func=cmd_ingest)
 
@@ -120,14 +144,28 @@ def build_parser() -> argparse.ArgumentParser:
     p_query.add_argument("--show-chunk-type", action="store_true")
     p_query.add_argument("--db-path", default=str(DEFAULT_DB_PATH))
     p_query.add_argument("--faiss-path", default=str(DEFAULT_FAISS_PATH))
-    p_query.add_argument("--model", default=DEFAULT_MODEL)
+    p_query.add_argument(
+        "--model",
+        help=(
+            "Embedding model. Defaults to "
+            f"{DEFAULT_OPENROUTER_MODEL} (OpenRouter) or {DEFAULT_OLLAMA_MODEL} (with --use-local-embedding)."
+        ),
+    )
+    p_query.add_argument("--use-local-embedding", action="store_true")
     p_query.set_defaults(func=cmd_query)
 
     p_eval = sub.add_parser("eval", help="Evaluate search quality with golden set")
     p_eval.add_argument("--golden", default="tests/golden_queries.yaml")
     p_eval.add_argument("--db-path", default=str(DEFAULT_DB_PATH))
     p_eval.add_argument("--faiss-path", default=str(DEFAULT_FAISS_PATH))
-    p_eval.add_argument("--model", default=DEFAULT_MODEL)
+    p_eval.add_argument(
+        "--model",
+        help=(
+            "Embedding model. Defaults to "
+            f"{DEFAULT_OPENROUTER_MODEL} (OpenRouter) or {DEFAULT_OLLAMA_MODEL} (with --use-local-embedding)."
+        ),
+    )
+    p_eval.add_argument("--use-local-embedding", action="store_true")
     p_eval.add_argument("--verbose", action="store_true")
     p_eval.set_defaults(func=cmd_eval)
 
