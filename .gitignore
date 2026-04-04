@@ -5,5 +5,6 @@ __pycache__/
 .env
 data_index/*.db
 data_index/*.faiss
+data_index/collections.yml
 
 semsearch.egg-info/

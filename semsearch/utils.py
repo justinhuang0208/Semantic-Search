@@ -11,9 +11,10 @@ def sha256_text(text: str) -> str:
 
 
 def normalize_path_text(value: str | Path, *, absolute: bool = False) -> str:
-    if not str(value).strip():
+    raw = str(value).strip()
+    if not raw:
         return ""
-    path = Path(value).expanduser()
+    path = Path(raw).expanduser()
     if absolute:
         path = path.resolve()
     text = path.as_posix()

@@ -45,6 +45,8 @@ export OPENROUTER_API_KEY="<YOUR_OPENROUTER_API_KEY>"
 semsearch collection add notes "/你的/Markdown/資料夾"
 ```
 
+每個 collection 會自動綁定一組索引檔路徑，之後 `ingest/query/eval --collection <name>` 會優先使用這組路徑，不需要每次手動補 `--db-path` 與 `--faiss-path`。
+
 若要使用不同的 registry 檔，可設定：
 
 ```bash
@@ -85,11 +87,12 @@ semsearch ingest --collection notes --use-local-embedding --rebuild
 - 系統會使用 embedding 快取（`content_hash + model`）避免重複呼叫 API。
 - 即使使用 `--rebuild`，只要內容 hash 曾經快取過，仍會直接重用，不會再次上傳到 embedding API。
 
-### Collection 與資料庫路徑的關係
+### Collection 與索引路徑的關係
 
 - `collection` 決定「這次 ingest 要讀哪個 collection」。
-- 是否為不同資料庫，取決於 `--db-path` 與 `--faiss-path`，不是 collection 名稱。
-- 若只更換 collection、但沿用同一組 `--db-path/--faiss-path`，會覆蓋同一套索引（看不到的舊文件會被當成刪除）。
+- 每個 collection 可以綁定自己的 `db_path` 與 `faiss_path`。
+- `ingest/query/eval --collection notes` 會自動使用 collection 綁定的索引路徑。
+- 若有特殊需求，仍可在 `collection add` 或 `ingest/query/eval` 時手動覆蓋 `--db-path` 與 `--faiss-path`。
 - collection registry 另外由 `--collections-path` 管理，預設會在 `data_index/collections.yml`。
 
 範例：建立兩套獨立索引（A 與 B）
@@ -97,8 +100,8 @@ semsearch ingest --collection notes --use-local-embedding --rebuild
 ```bash
 semsearch collection add A "/path/A"
 semsearch collection add B "/path/B"
-semsearch ingest --collection A --db-path data_index/A.db --faiss-path data_index/A.faiss
-semsearch ingest --collection B --db-path data_index/B.db --faiss-path data_index/B.faiss
+semsearch ingest --collection A
+semsearch ingest --collection B
 ```
 
 ## 6. 查詢
@@ -155,7 +158,7 @@ semsearch context list notes
 semsearch context rm collection://notes/api
 ```
 
-- `collection` 用來定義 collection 的根目錄與掃描 mask。
+- `collection` 用來定義 collection 的根目錄、掃描 mask、以及預設索引路徑。
 - `context` 用來加上 collection-wide 或 path-specific 的額外背景文字。
 - `query` 預設只看 `include-by-default=true` 的 collections；也可以用 `--collection` 指定單一 collection。
 

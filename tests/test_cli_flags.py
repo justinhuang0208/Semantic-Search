@@ -1,17 +1,24 @@
 from __future__ import annotations
 
+import io
+import json
 import unittest
+from contextlib import redirect_stdout
 from unittest import mock
 
 from semsearch.embeddings import DEFAULT_OLLAMA_MODEL, DEFAULT_OPENROUTER_MODEL
+from semsearch.models import SearchResult
 
 try:
-    from semsearch.cli import _api_key, _resolve_model, build_parser
+    from semsearch.cli import _api_key, _resolve_index_paths, _resolve_model, build_parser
+    from semsearch.collections import CollectionConfig
 
     CLI_IMPORTABLE = True
 except ModuleNotFoundError:
     _api_key = None  # type: ignore[assignment]
+    _resolve_index_paths = None  # type: ignore[assignment]
     _resolve_model = None  # type: ignore[assignment]
+    CollectionConfig = None  # type: ignore[assignment]
     build_parser = None  # type: ignore[assignment]
     CLI_IMPORTABLE = False
 
@@ -51,6 +58,95 @@ class CliFlagsTests(unittest.TestCase):
         self.assertTrue(args_eval.use_local_embedding)
         self.assertEqual(args_collection.command, "collection")
         self.assertEqual(args_context.command, "context")
+
+    def test_index_paths_default_to_collection_paths(self) -> None:
+        assert _resolve_index_paths is not None
+        assert CollectionConfig is not None
+        collection = CollectionConfig(
+            collection_id="notes",
+            name="notes",
+            root_path="/tmp/notes",
+            db_path="data_index/notes.db",
+            faiss_path="data_index/notes.faiss",
+        )
+        args = mock.Mock()
+        args.db_path = None
+        args.faiss_path = None
+
+        db_path, faiss_path = _resolve_index_paths(args, collection)
+
+        self.assertEqual(str(db_path), "data_index/notes.db")
+        self.assertEqual(str(faiss_path), "data_index/notes.faiss")
+
+    def test_query_outputs_structured_json(self) -> None:
+        assert build_parser is not None
+        parser = build_parser()
+        result = SearchResult(
+            chunk_rowid=1,
+            chunk_id="test::new.md::text::0",
+            doc_id="test::new.md",
+            collection_id="test",
+            collection_name="test",
+            title="new",
+            source_path="/tmp/test/new.md",
+            relative_path="new.md",
+            section_path="new",
+            chunk_type="text",
+            text="hello world",
+            fusion_score=0.87654,
+            vector_rank=1,
+            bm25_rank=1,
+        )
+        args = parser.parse_args(["query", "hello", "--use-local-embedding"])
+
+        with mock.patch("semsearch.cli.search", return_value=[result]):
+            buffer = io.StringIO()
+            with redirect_stdout(buffer):
+                exit_code = args.func(args)
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(
+            json.loads(buffer.getvalue()),
+            [
+                {
+                    "doc_id": "test::new.md",
+                    "score": 0.8765,
+                    "file": "qmd://test/new.md",
+                    "title": "new",
+                    "snippet": "hello world",
+                }
+            ],
+        )
+
+    def test_query_can_include_chunk_type_in_json(self) -> None:
+        assert build_parser is not None
+        parser = build_parser()
+        result = SearchResult(
+            chunk_rowid=1,
+            chunk_id="test::new.md::code::0",
+            doc_id="test::new.md",
+            collection_id="test",
+            collection_name="test",
+            title="new",
+            source_path="/tmp/test/new.md",
+            relative_path="new.md",
+            section_path="new",
+            chunk_type="code",
+            text="print('hello')",
+            fusion_score=0.5,
+            vector_rank=1,
+            bm25_rank=2,
+        )
+        args = parser.parse_args(["query", "hello", "--use-local-embedding", "--show-chunk-type"])
+
+        with mock.patch("semsearch.cli.search", return_value=[result]):
+            buffer = io.StringIO()
+            with redirect_stdout(buffer):
+                exit_code = args.func(args)
+
+        self.assertEqual(exit_code, 0)
+        payload = json.loads(buffer.getvalue())
+        self.assertEqual(payload[0]["chunk_type"], "code")
 
 
 if __name__ == "__main__":

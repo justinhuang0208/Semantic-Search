@@ -4,6 +4,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+import re
 
 import yaml
 
@@ -12,6 +13,7 @@ from .utils import normalize_path_text, prefix_matches_path, sha256_text
 DEFAULT_COLLECTIONS_PATH = Path("data_index/collections.yml")
 DEFAULT_COLLECTION_NAME = "default"
 DEFAULT_COLLECTION_MASK = "*.md"
+DEFAULT_INDEX_DIR = Path("data_index")
 
 
 def _now_iso() -> str:
@@ -25,6 +27,27 @@ def _new_id() -> str:
 def _normalize_rel_path(value: str | Path) -> str:
     text = normalize_path_text(value)
     return text.lstrip("/")
+
+
+def _normalize_root_path(value: str | Path) -> Path:
+    return Path(str(value).strip()).expanduser().resolve()
+
+
+def _normalize_optional_path(value: str | Path | None) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    return normalize_path_text(text)
+
+
+def default_index_paths(name: str) -> tuple[str, str]:
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "_", name.strip()).strip("._-")
+    if not slug:
+        slug = DEFAULT_COLLECTION_NAME
+    base = DEFAULT_INDEX_DIR / slug
+    return (normalize_path_text(base.with_suffix(".db")), normalize_path_text(base.with_suffix(".faiss")))
 
 
 def _split_collection_uri(uri: str) -> tuple[str | None, str]:
@@ -93,19 +116,32 @@ class CollectionConfig:
     collection_id: str
     name: str
     root_path: str
+    db_path: str | None = None
+    faiss_path: str | None = None
     mask: str = DEFAULT_COLLECTION_MASK
     include_by_default: bool = True
     created_at: str = field(default_factory=_now_iso)
     updated_at: str = field(default_factory=_now_iso)
 
     def root_path_resolved(self) -> Path:
-        return Path(self.root_path).expanduser().resolve()
+        return _normalize_root_path(self.root_path)
+
+    def index_paths(self) -> tuple[Path, Path]:
+        db_path = self.db_path
+        faiss_path = self.faiss_path
+        if db_path is None or faiss_path is None:
+            default_db, default_faiss = default_index_paths(self.name)
+            db_path = db_path or default_db
+            faiss_path = faiss_path or default_faiss
+        return (Path(db_path), Path(faiss_path))
 
     def to_dict(self) -> dict:
         return {
             "collection_id": self.collection_id,
             "name": self.name,
             "root_path": self.root_path,
+            "db_path": self.db_path,
+            "faiss_path": self.faiss_path,
             "mask": self.mask,
             "include_by_default": self.include_by_default,
             "created_at": self.created_at,
@@ -118,6 +154,8 @@ class CollectionConfig:
             collection_id=str(data.get("collection_id") or _new_id()),
             name=str(data.get("name") or DEFAULT_COLLECTION_NAME),
             root_path=str(data.get("root_path") or "."),
+            db_path=_normalize_optional_path(data.get("db_path")),
+            faiss_path=_normalize_optional_path(data.get("faiss_path")),
             mask=str(data.get("mask") or DEFAULT_COLLECTION_MASK),
             include_by_default=bool(data.get("include_by_default", True)),
             created_at=str(data.get("created_at") or _now_iso()),
@@ -197,8 +235,10 @@ class CollectionRegistry:
         name: str = DEFAULT_COLLECTION_NAME,
         mask: str = DEFAULT_COLLECTION_MASK,
         include_by_default: bool = True,
+        db_path: str | Path | None = None,
+        faiss_path: str | Path | None = None,
     ) -> CollectionConfig:
-        source_path = Path(source).expanduser().resolve()
+        source_path = _normalize_root_path(source)
         existing = self.find_by_root(source_path)
         if existing is not None:
             return existing
@@ -217,6 +257,8 @@ class CollectionRegistry:
             collection_id=_new_id(),
             name=candidate_name,
             root_path=str(source_path),
+            db_path=_normalize_optional_path(db_path),
+            faiss_path=_normalize_optional_path(faiss_path),
             mask=mask,
             include_by_default=include_by_default,
             created_at=_now_iso(),
@@ -233,10 +275,12 @@ class CollectionRegistry:
         root_path: str | Path,
         mask: str = DEFAULT_COLLECTION_MASK,
         include_by_default: bool = True,
+        db_path: str | Path | None = None,
+        faiss_path: str | Path | None = None,
     ) -> CollectionConfig:
         if any(item.name == name for item in self.collections):
             raise RuntimeError(f"Collection already exists: {name}")
-        root_norm = Path(root_path).expanduser().resolve()
+        root_norm = _normalize_root_path(root_path)
         if self.find_by_root(root_norm) is not None:
             raise RuntimeError(f"A collection already uses root path: {root_norm}")
 
@@ -244,6 +288,8 @@ class CollectionRegistry:
             collection_id=_new_id(),
             name=name,
             root_path=str(root_norm),
+            db_path=_normalize_optional_path(db_path),
+            faiss_path=_normalize_optional_path(faiss_path),
             mask=mask,
             include_by_default=include_by_default,
             created_at=_now_iso(),
@@ -258,6 +304,24 @@ class CollectionRegistry:
             raise RuntimeError(f"Collection already exists: {new_name}")
         idx = self._find_index(identifier)
         self.collections[idx].name = new_name
+        if self.collections[idx].db_path is None or self.collections[idx].faiss_path is None:
+            default_db, default_faiss = default_index_paths(new_name)
+            self.collections[idx].db_path = self.collections[idx].db_path or default_db
+            self.collections[idx].faiss_path = self.collections[idx].faiss_path or default_faiss
+        self.collections[idx].updated_at = _now_iso()
+        self.save()
+        return self.collections[idx]
+
+    def update_collection_index_paths(
+        self,
+        identifier: str,
+        *,
+        db_path: str | Path | None,
+        faiss_path: str | Path | None,
+    ) -> CollectionConfig:
+        idx = self._find_index(identifier)
+        self.collections[idx].db_path = _normalize_optional_path(db_path)
+        self.collections[idx].faiss_path = _normalize_optional_path(faiss_path)
         self.collections[idx].updated_at = _now_iso()
         self.save()
         return self.collections[idx]
