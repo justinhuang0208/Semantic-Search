@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 
@@ -73,6 +74,32 @@ class StorageAndIndexTests(unittest.TestCase):
 
             with self.assertRaisesRegex(VectorIndexError, "dimension"):
                 index.search(np.asarray([1.0, 0.0], dtype=np.float32), top_k=3)
+
+    def test_native_faiss_index_without_runtime_raises_clear_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            index_path = Path(tmp) / "semsearch.faiss"
+            index_path.write_bytes(b"IxM2\x00\x04\x00\x00fake-faiss")
+            index = VectorIndex(index_path)
+
+            with mock.patch("semsearch.vector_index.FAISS_AVAILABLE", False):
+                with self.assertRaisesRegex(VectorIndexError, "does not have faiss installed"):
+                    index.load()
+
+    def test_search_in_memory_supports_numpy_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            index = VectorIndex(Path(tmp) / "unused.faiss")
+            results = index.search_in_memory(
+                np.asarray([1.0, 0.0], dtype=np.float32),
+                vectors=[
+                    np.asarray([1.0, 0.0], dtype=np.float32),
+                    np.asarray([0.0, 1.0], dtype=np.float32),
+                ],
+                ids=[11, 22],
+                top_k=2,
+            )
+
+        self.assertEqual(results[0][0], 11)
+        self.assertGreater(results[0][1], results[1][1])
 
 
 if __name__ == "__main__":

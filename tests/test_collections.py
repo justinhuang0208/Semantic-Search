@@ -11,6 +11,7 @@ import numpy as np
 from semsearch.collections import CollectionRegistry
 from semsearch.embeddings import EmbeddingResponse
 from semsearch.pipeline import ingest, search
+from semsearch.vector_index import VectorIndexError
 
 
 class FakeEmbedder:
@@ -125,6 +126,57 @@ class CollectionIngestTests(unittest.TestCase):
             self.assertEqual({item.collection_id for item in all_results}, {collection_a.collection_id, collection_b.collection_id})
             self.assertEqual({item.collection_id for item in filtered_results}, {collection_a.collection_id})
             self.assertEqual(filtered_results[0].relative_path, "topic.md")
+
+    def test_query_falls_back_to_in_memory_vectors_when_index_load_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            root = tmp_path / "notes"
+            root.mkdir()
+            (root / "topic.md").write_text("# Topic\nalpha banana\n", encoding="utf-8")
+
+            registry_path = tmp_path / "collections.yml"
+            registry = CollectionRegistry.load(registry_path)
+            collection = registry.add_collection(name="notes", root_path=root)
+
+            db_path = tmp_path / "semsearch.db"
+            faiss_path = tmp_path / "semsearch.faiss"
+            runtime = SimpleNamespace(
+                provider="stub",
+                model="stub-model",
+                cache_key="stub::stub-model",
+                embedder=FakeEmbedder(),
+            )
+
+            with mock.patch("semsearch.pipeline.resolve_embedder", return_value=runtime):
+                ingest(
+                    source=root,
+                    db_path=db_path,
+                    faiss_path=faiss_path,
+                    api_key=None,
+                    model="stub-model",
+                    rebuild=True,
+                    use_local_embedding=True,
+                    collections_path=registry_path,
+                    collection=collection.collection_id,
+                )
+                with mock.patch(
+                    "semsearch.pipeline.VectorIndex.search",
+                    side_effect=VectorIndexError("broken index"),
+                ):
+                    results = search(
+                        query="alpha",
+                        db_path=db_path,
+                        faiss_path=faiss_path,
+                        api_key=None,
+                        model="stub-model",
+                        top_k=5,
+                        use_local_embedding=True,
+                        collections_path=registry_path,
+                        collection=collection.collection_id,
+                    )
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].relative_path, "topic.md")
 
 
 if __name__ == "__main__":

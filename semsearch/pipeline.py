@@ -14,7 +14,7 @@ from .retrieval import bm25_search, reciprocal_rank_fusion, rerank_with_doc_dive
 from .storage import Storage
 from .tokenize import count_terms
 from .utils import is_hidden_or_ignored, normalize_query_text
-from .vector_index import VectorIndex
+from .vector_index import VectorIndex, VectorIndexError
 
 
 @dataclass(slots=True)
@@ -343,7 +343,16 @@ def search(
         embedded = runtime.embedder.embed_texts([normalized_query], input_type="query")
 
         index = VectorIndex(faiss_path)
-        vector_results = index.search(embedded.vectors[0], top_k=vector_top_k)
+        try:
+            vector_results = index.search(embedded.vectors[0], top_k=vector_top_k)
+        except VectorIndexError:
+            ids, vectors = storage.all_chunk_vectors(model=runtime.cache_key)
+            vector_results = index.search_in_memory(
+                embedded.vectors[0],
+                vectors=vectors,
+                ids=ids,
+                top_k=vector_top_k,
+            )
         if selected_collection_ids is not None:
             allowed_collection_ids = set(selected_collection_ids)
             rows = storage.chunks_by_ids([chunk_id for chunk_id, _score in vector_results])

@@ -18,6 +18,9 @@ class VectorIndexError(RuntimeError):
     pass
 
 
+_NUMPY_ARCHIVE_MAGIC = b"PK\x03\x04"
+
+
 @dataclass(slots=True)
 class _NumpyIndex:
     ids: np.ndarray
@@ -29,36 +32,11 @@ class VectorIndex:
     def __init__(self, index_path: Path) -> None:
         self.index_path = index_path
 
-    def build(self, vectors: list[np.ndarray], ids: list[int], dim: int) -> None:
-        if len(vectors) != len(ids):
-            raise VectorIndexError("Vector count and id count mismatch.")
-        if not vectors:
-            raise VectorIndexError("No vectors to index.")
+    def _is_numpy_archive(self) -> bool:
+        with self.index_path.open("rb") as handle:
+            return handle.read(4) == _NUMPY_ARCHIVE_MAGIC
 
-        matrix = np.vstack(vectors).astype(np.float32)
-        id_array = np.asarray(ids, dtype=np.int64)
-
-        self.index_path.parent.mkdir(parents=True, exist_ok=True)
-        if FAISS_AVAILABLE:
-            base = faiss.IndexFlatIP(dim)
-            index = faiss.IndexIDMap2(base)
-            index.add_with_ids(matrix, id_array)
-            faiss.write_index(index, str(self.index_path))
-            return
-
-        with self.index_path.open("wb") as handle:
-            np.savez_compressed(handle, ids=id_array, vectors=matrix, dim=np.asarray([dim], dtype=np.int64))
-
-    def load(self) -> faiss.Index | _NumpyIndex:
-        if not self.index_path.exists():
-            raise VectorIndexError(f"FAISS index not found: {self.index_path}")
-
-        if FAISS_AVAILABLE:
-            try:
-                return faiss.read_index(str(self.index_path))
-            except Exception:
-                pass
-
+    def _load_numpy_index(self) -> _NumpyIndex:
         with self.index_path.open("rb") as handle:
             data = np.load(handle, allow_pickle=False)
             try:
@@ -70,8 +48,7 @@ class VectorIndex:
             finally:
                 data.close()
 
-    def search(self, query_vec: np.ndarray, top_k: int) -> list[tuple[int, float]]:
-        loaded = self.load()
+    def _search_loaded(self, loaded: faiss.Index | _NumpyIndex, query_vec: np.ndarray, top_k: int) -> list[tuple[int, float]]:
         q = np.asarray(query_vec, dtype=np.float32).reshape(1, -1)
         query_dim = int(q.shape[1])
 
@@ -104,3 +81,69 @@ class VectorIndex:
                 continue
             results.append((int(chunk_id), float(score)))
         return results
+
+    def build(self, vectors: list[np.ndarray], ids: list[int], dim: int) -> None:
+        if len(vectors) != len(ids):
+            raise VectorIndexError("Vector count and id count mismatch.")
+        if not vectors:
+            raise VectorIndexError("No vectors to index.")
+
+        matrix = np.vstack(vectors).astype(np.float32)
+        id_array = np.asarray(ids, dtype=np.int64)
+
+        self.index_path.parent.mkdir(parents=True, exist_ok=True)
+        if FAISS_AVAILABLE:
+            base = faiss.IndexFlatIP(dim)
+            index = faiss.IndexIDMap2(base)
+            index.add_with_ids(matrix, id_array)
+            faiss.write_index(index, str(self.index_path))
+            return
+
+        with self.index_path.open("wb") as handle:
+            np.savez_compressed(handle, ids=id_array, vectors=matrix, dim=np.asarray([dim], dtype=np.int64))
+
+    def load(self) -> faiss.Index | _NumpyIndex:
+        if not self.index_path.exists():
+            raise VectorIndexError(f"FAISS index not found: {self.index_path}")
+
+        if FAISS_AVAILABLE:
+            try:
+                return faiss.read_index(str(self.index_path))
+            except Exception as exc:
+                if not self._is_numpy_archive():
+                    raise VectorIndexError(
+                        f"Unable to load vector index at {self.index_path}. "
+                        "The file is not a readable FAISS index for this runtime."
+                    ) from exc
+
+        if not self._is_numpy_archive():
+            raise VectorIndexError(
+                f"Unable to load vector index at {self.index_path}. "
+                "This environment does not have faiss installed and the index is stored in native FAISS format. "
+                "Install faiss or rebuild the index in numpy fallback format."
+            )
+
+        return self._load_numpy_index()
+
+    def search_in_memory(
+        self,
+        query_vec: np.ndarray,
+        *,
+        vectors: list[np.ndarray],
+        ids: list[int],
+        top_k: int,
+    ) -> list[tuple[int, float]]:
+        if len(vectors) != len(ids):
+            raise VectorIndexError("Vector count and id count mismatch.")
+        if not vectors:
+            return []
+        loaded = _NumpyIndex(
+            ids=np.asarray(ids, dtype=np.int64),
+            vectors=np.vstack(vectors).astype(np.float32),
+            dim=int(np.asarray(vectors[0]).shape[0]),
+        )
+        return self._search_loaded(loaded, query_vec, top_k)
+
+    def search(self, query_vec: np.ndarray, top_k: int) -> list[tuple[int, float]]:
+        loaded = self.load()
+        return self._search_loaded(loaded, query_vec, top_k)
