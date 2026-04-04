@@ -29,6 +29,18 @@ class FakeEmbedder:
         return EmbeddingResponse(vectors=vectors, dim=2)
 
 
+class FakeReranker:
+    def score(self, query: str, documents: list[str]) -> list[float]:
+        del query
+        scores: list[float] = []
+        for document in documents:
+            if "beta" in document.lower():
+                scores.append(1.0)
+            else:
+                scores.append(0.1)
+        return scores
+
+
 class CollectionRegistryTests(unittest.TestCase):
     def test_context_matching_uses_global_collection_and_path_specific_order(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -271,6 +283,130 @@ class CollectionIngestTests(unittest.TestCase):
 
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0].relative_path, "topic.md")
+
+    def test_query_does_not_resolve_reranker_when_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            root = tmp_path / "notes"
+            root.mkdir()
+            (root / "topic.md").write_text("# Topic\nalpha banana\n", encoding="utf-8")
+
+            registry_path = tmp_path / "collections.yml"
+            registry = CollectionRegistry.load(registry_path)
+            collection = registry.add_collection(name="notes", root_path=root)
+
+            db_path = tmp_path / "semsearch.db"
+            faiss_path = tmp_path / "semsearch.faiss"
+            runtime = SimpleNamespace(
+                provider="stub",
+                model="stub-model",
+                cache_key="stub::stub-model",
+                embedder=FakeEmbedder(),
+            )
+
+            with mock.patch("semsearch.pipeline.resolve_embedder", return_value=runtime):
+                ingest(
+                    source=root,
+                    db_path=db_path,
+                    faiss_path=faiss_path,
+                    api_key=None,
+                    model="stub-model",
+                    rebuild=True,
+                    use_local_embedding=True,
+                    collections_path=registry_path,
+                    collection=collection.collection_id,
+                )
+                with mock.patch("semsearch.pipeline.resolve_reranker") as resolve_reranker_mock:
+                    results = search(
+                        query="alpha",
+                        db_path=db_path,
+                        faiss_path=faiss_path,
+                        api_key=None,
+                        model="stub-model",
+                        top_k=5,
+                        use_local_embedding=True,
+                        use_reranker=False,
+                        collections_path=registry_path,
+                        collection=collection.collection_id,
+                    )
+
+        self.assertEqual(len(results), 1)
+        resolve_reranker_mock.assert_not_called()
+
+    def test_query_can_rerank_top_candidates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            root = tmp_path / "notes"
+            root.mkdir()
+            (root / "alpha.md").write_text("# Alpha\nalpha banana\n", encoding="utf-8")
+            (root / "beta.md").write_text("# Beta\nbeta carrot\n", encoding="utf-8")
+
+            registry_path = tmp_path / "collections.yml"
+            registry = CollectionRegistry.load(registry_path)
+            collection = registry.add_collection(name="notes", root_path=root)
+
+            db_path = tmp_path / "semsearch.db"
+            faiss_path = tmp_path / "semsearch.faiss"
+            runtime = SimpleNamespace(
+                provider="stub",
+                model="stub-model",
+                cache_key="stub::stub-model",
+                embedder=FakeEmbedder(),
+            )
+            reranker_runtime = SimpleNamespace(
+                provider="local-transformers",
+                model="Qwen/Qwen3-Reranker-0.6B",
+                device="cpu",
+                reranker=FakeReranker(),
+            )
+
+            with mock.patch("semsearch.pipeline.resolve_embedder", return_value=runtime):
+                ingest(
+                    source=root,
+                    db_path=db_path,
+                    faiss_path=faiss_path,
+                    api_key=None,
+                    model="stub-model",
+                    rebuild=True,
+                    use_local_embedding=True,
+                    collections_path=registry_path,
+                    collection=collection.collection_id,
+                )
+                baseline = search(
+                    query="alpha",
+                    db_path=db_path,
+                    faiss_path=faiss_path,
+                    api_key=None,
+                    model="stub-model",
+                    top_k=2,
+                    use_local_embedding=True,
+                    use_reranker=False,
+                    collections_path=registry_path,
+                    collection=collection.collection_id,
+                )
+                with mock.patch(
+                    "semsearch.pipeline.resolve_reranker",
+                    return_value=reranker_runtime,
+                ):
+                    reranked = search(
+                        query="alpha",
+                        db_path=db_path,
+                        faiss_path=faiss_path,
+                        api_key=None,
+                        model="stub-model",
+                        top_k=2,
+                        use_local_embedding=True,
+                        use_reranker=True,
+                        rerank_top_k=2,
+                        collections_path=registry_path,
+                        collection=collection.collection_id,
+                    )
+
+        self.assertEqual([item.relative_path for item in baseline], ["alpha.md", "beta.md"])
+        self.assertEqual([item.relative_path for item in reranked], ["beta.md", "alpha.md"])
+        self.assertIsNone(baseline[0].rerank_score)
+        self.assertEqual(reranked[0].rerank_score, 1.0)
+        self.assertEqual(reranked[0].final_score, 1.0)
 
 
 if __name__ == "__main__":

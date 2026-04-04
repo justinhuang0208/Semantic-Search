@@ -8,3 +8,5 @@
 - Before concluding an environment dependency is missing, verify the active interpreter and re-check inside the project's required conda environment.
 - When extracting hashtags as metadata, strip them from chunk text before embedding so tag markers do not pollute vector search or snippets.
 - When the user specifies an existing CLI or executable name, preserve that name and do not introduce a new alias unless explicitly requested.
+- When simplifying config schemas, keep any source-specific path the workflow still truly needs; do not remove required SQLite or storage paths just because db/faiss storage moved elsewhere.
+- When reverting a user-requested config change, update the corresponding script defaults and README text too; otherwise the repo ends up with mismatched sources of truth.

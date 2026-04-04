@@ -9,3 +9,6 @@ dependencies:
       - requests>=2.31
       - PyYAML>=6.0
       - faiss-cpu>=1.8.0
+      - safetensors>=0.4.3
+      - torch>=2.3
+      - transformers>=4.51.0

@@ -9,6 +9,7 @@ from .collections import DEFAULT_COLLECTIONS_PATH, CollectionRegistry, default_i
 from .embeddings import DEFAULT_OLLAMA_MODEL, DEFAULT_OPENROUTER_MODEL
 from .models import SearchResult
 from .pipeline import evaluate, ingest, search
+from .rerankers import DEFAULT_QWEN_RERANKER_MODEL
 
 DEFAULT_SOURCE = Path("1 - Cards")
 DEFAULT_DB_PATH = Path("data_index/semsearch.db")
@@ -87,7 +88,12 @@ def _resolve_index_paths(
     return (db_default, faiss_default)
 
 
-def _add_search_args(parser: argparse.ArgumentParser, *, include_embedding: bool) -> None:
+def _add_search_args(
+    parser: argparse.ArgumentParser,
+    *,
+    include_embedding: bool,
+    include_reranker: bool = False,
+) -> None:
     parser.add_argument("query")
     parser.add_argument("--top-k", type=int, default=8)
     parser.add_argument("--show-chunk-type", action="store_true")
@@ -111,6 +117,29 @@ def _add_search_args(parser: argparse.ArgumentParser, *, include_embedding: bool
             ),
         )
         parser.add_argument("--use-local-embedding", action="store_true")
+    if include_reranker:
+        parser.add_argument(
+            "--use-reranker",
+            action="store_true",
+            help="Rerank top candidates locally with Qwen3 reranker.",
+        )
+        parser.add_argument(
+            "--reranker-model",
+            default=DEFAULT_QWEN_RERANKER_MODEL,
+            help=f"Local reranker model (default: {DEFAULT_QWEN_RERANKER_MODEL}).",
+        )
+        parser.add_argument(
+            "--rerank-top-k",
+            type=int,
+            default=20,
+            help="Number of top candidates to rerank locally.",
+        )
+        parser.add_argument(
+            "--reranker-device",
+            choices=["auto", "mps", "cpu"],
+            default="auto",
+            help="Device for local reranker inference. Default prefers MPS on Apple Silicon.",
+        )
 
 
 def _run_search_command(args: argparse.Namespace, *, search_mode: str) -> int:
@@ -135,6 +164,10 @@ def _run_search_command(args: argparse.Namespace, *, search_mode: str) -> int:
         model=model,
         use_local_embedding=use_local_embedding,
         top_k=args.top_k,
+        use_reranker=getattr(args, "use_reranker", False),
+        reranker_model=getattr(args, "reranker_model", None),
+        rerank_top_k=getattr(args, "rerank_top_k", 20),
+        reranker_device=getattr(args, "reranker_device", "auto"),
         collections_path=Path(args.collections_path),
         collection=args.collection,
         search_mode=search_mode,
@@ -217,7 +250,7 @@ def _query_payload(results: list[SearchResult], *, show_chunk_type: bool) -> lis
 def _serialize_query_result(item: SearchResult, *, show_chunk_type: bool) -> dict[str, object]:
     payload: dict[str, object] = {
         "doc_id": _docid_for_result(item),
-        "score": round(item.fusion_score, 4),
+        "score": round(item.final_score, 4),
         "file": _result_file_uri(item),
         "title": item.title,
         "snippet": _result_snippet(item.text),
@@ -416,7 +449,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_vsearch.set_defaults(func=cmd_vsearch)
 
     p_query = sub.add_parser("query", help="Hybrid search indexed markdown chunks")
-    _add_search_args(p_query, include_embedding=True)
+    _add_search_args(p_query, include_embedding=True, include_reranker=True)
     p_query.set_defaults(func=cmd_query)
 
     p_eval = sub.add_parser("eval", help="Evaluate search quality with golden set")

@@ -70,7 +70,9 @@ def rerank_with_doc_diversity(
     vector_rank: dict[int, int],
     bm25_rank: dict[int, int],
     top_k: int,
+    rerank_scores: dict[int, float] | None = None,
 ) -> list[SearchResult]:
+    rerank_scores = rerank_scores or {}
     chunk_ids = [chunk_id for chunk_id, _ in fused]
     rows = storage.chunks_by_ids(chunk_ids)
 
@@ -95,19 +97,21 @@ def rerank_with_doc_diversity(
     for chunk_id, score in final_ids[:top_k]:
         row = rows[chunk_id]
         results.append(
-                SearchResult(
-                    chunk_rowid=chunk_id,
-                    chunk_id=str(row["chunk_id"]),
-                    doc_id=str(row["doc_id"]),
-                    collection_id=str(row["collection_id"]),
-                    collection_name=str(row["collection_name"]),
-                    title=str(row["title"]),
-                    source_path=str(row["source_path"]),
-                    relative_path=str(row["relative_path"]),
-                    section_path=str(row["section_path"]),
-                    chunk_type=str(row["chunk_type"]),
-                    text=str(row["text"]),
+            SearchResult(
+                chunk_rowid=chunk_id,
+                chunk_id=str(row["chunk_id"]),
+                doc_id=str(row["doc_id"]),
+                collection_id=str(row["collection_id"]),
+                collection_name=str(row["collection_name"]),
+                title=str(row["title"]),
+                source_path=str(row["source_path"]),
+                relative_path=str(row["relative_path"]),
+                section_path=str(row["section_path"]),
+                chunk_type=str(row["chunk_type"]),
+                text=str(row["text"]),
                 fusion_score=float(score),
+                rerank_score=rerank_scores.get(chunk_id),
+                final_score=float(rerank_scores.get(chunk_id, score)),
                 vector_rank=vector_rank.get(chunk_id),
                 bm25_rank=bm25_rank.get(chunk_id),
             )

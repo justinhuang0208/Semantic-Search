@@ -11,6 +11,7 @@ from .collections import DEFAULT_COLLECTIONS_PATH, CollectionConfig, CollectionR
 from .embeddings import resolve_embedder
 from .markdown_ingest import parse_markdown
 from .models import ChunkDraft, SearchResult
+from .rerankers import resolve_reranker
 from .retrieval import bm25_search, reciprocal_rank_fusion, rerank_with_doc_diversity
 from .storage import Storage
 from .tokenize import count_terms
@@ -314,6 +315,10 @@ def search(
     vector_top_k: int = 20,
     bm25_top_k: int = 20,
     use_local_embedding: bool = False,
+    use_reranker: bool = False,
+    reranker_model: str | None = None,
+    rerank_top_k: int = 20,
+    reranker_device: str = "auto",
     collections_path: Path = DEFAULT_COLLECTIONS_PATH,
     collection: str | None = None,
     search_mode: SearchMode = "hybrid",
@@ -391,20 +396,61 @@ def search(
             bm25_rank = {}
         else:
             fused, vector_rank, bm25_rank = reciprocal_rank_fusion(vector_results, bm25_results, k=60)
+        rerank_scores: dict[int, float] = {}
+        if use_reranker and fused:
+            reranker_runtime = resolve_reranker(
+                use_reranker=True,
+                model=reranker_model,
+                device=reranker_device,
+            )
+            if reranker_runtime is not None:
+                rerank_limit = max(1, min(rerank_top_k, len(fused)))
+                rerank_candidates = fused[:rerank_limit]
+                rerank_rows = storage.chunks_by_ids([chunk_id for chunk_id, _score in rerank_candidates])
+                rerank_ids = [
+                    chunk_id for chunk_id, _score in rerank_candidates if chunk_id in rerank_rows
+                ]
+                rerank_documents = [
+                    _reranker_document_text(rerank_rows[chunk_id]) for chunk_id in rerank_ids
+                ]
+                rerank_values = reranker_runtime.reranker.score(normalized_query, rerank_documents)
+                rerank_scores = {
+                    chunk_id: score for chunk_id, score in zip(rerank_ids, rerank_values, strict=True)
+                }
+                reranked_prefix = sorted(
+                    [(chunk_id, rerank_scores[chunk_id]) for chunk_id in rerank_ids],
+                    key=lambda item: item[1],
+                    reverse=True,
+                )
+                reranked_ids = {chunk_id for chunk_id, _score in reranked_prefix}
+                fused = reranked_prefix + [
+                    (chunk_id, score)
+                    for chunk_id, score in fused
+                    if chunk_id not in reranked_ids
+                ]
         results = rerank_with_doc_diversity(
             storage,
             fused=fused,
             vector_rank=vector_rank,
             bm25_rank=bm25_rank,
             top_k=top_k,
+            rerank_scores=rerank_scores,
         )
-        if search_mode == "fulltext":
-            results = sorted(results, key=lambda item: item.fusion_score, reverse=True)
+        if search_mode == "fulltext" and not use_reranker:
+            results = sorted(results, key=lambda item: item.final_score, reverse=True)
         for item in results:
             item.collection_name = collection_name_by_id.get(item.collection_id, item.collection_name)
         return results
     finally:
         storage.close()
+
+
+def _reranker_document_text(row) -> str:
+    title = str(row["title"]).strip()
+    section_path = str(row["section_path"]).strip()
+    text = str(row["text"]).strip()
+    parts = [part for part in [title, section_path, text] if part]
+    return "\n\n".join(parts)
 
 
 def evaluate(

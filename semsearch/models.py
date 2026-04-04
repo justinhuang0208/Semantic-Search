@@ -56,5 +56,7 @@ class SearchResult:
     chunk_type: str
     text: str
     fusion_score: float
+    rerank_score: float | None
+    final_score: float
     vector_rank: int | None
     bm25_rank: int | None

@@ -49,7 +49,20 @@ class CliFlagsTests(unittest.TestCase):
         args_ingest_legacy = parser.parse_args(["ingest", "--source", "legacy"])
         args_search = parser.parse_args(["search", "hello"])
         args_vsearch = parser.parse_args(["vsearch", "hello", "--use-local-embedding"])
-        args_query = parser.parse_args(["query", "hello", "--use-local-embedding"])
+        args_query = parser.parse_args(
+            [
+                "query",
+                "hello",
+                "--use-local-embedding",
+                "--use-reranker",
+                "--reranker-model",
+                "tomaarsen/Qwen3-Reranker-0.6B-seq-cls",
+                "--rerank-top-k",
+                "12",
+                "--reranker-device",
+                "cpu",
+            ]
+        )
         args_eval = parser.parse_args(["eval", "--use-local-embedding"])
         args_collection = parser.parse_args(["collection", "list"])
         args_context = parser.parse_args(["context", "add", "/", "--text", "hello"])
@@ -63,6 +76,10 @@ class CliFlagsTests(unittest.TestCase):
         self.assertFalse(hasattr(args_search, "model"))
         self.assertTrue(args_vsearch.use_local_embedding)
         self.assertTrue(args_query.use_local_embedding)
+        self.assertTrue(args_query.use_reranker)
+        self.assertEqual(args_query.reranker_model, "tomaarsen/Qwen3-Reranker-0.6B-seq-cls")
+        self.assertEqual(args_query.rerank_top_k, 12)
+        self.assertEqual(args_query.reranker_device, "cpu")
         self.assertTrue(args_eval.use_local_embedding)
         self.assertEqual(args_collection.command, "collection")
         self.assertEqual(args_context.command, "context")
@@ -102,6 +119,8 @@ class CliFlagsTests(unittest.TestCase):
             chunk_type="text",
             text="hello world",
             fusion_score=0.87654,
+            rerank_score=None,
+            final_score=0.87654,
             vector_rank=1,
             bm25_rank=1,
         )
@@ -142,6 +161,8 @@ class CliFlagsTests(unittest.TestCase):
             chunk_type="text",
             text="hello world",
             fusion_score=0.87654,
+            rerank_score=None,
+            final_score=0.87654,
             vector_rank=1,
             bm25_rank=1,
         )
@@ -182,6 +203,8 @@ class CliFlagsTests(unittest.TestCase):
             chunk_type="code",
             text="print('hello')",
             fusion_score=0.5,
+            rerank_score=0.9321,
+            final_score=0.9321,
             vector_rank=1,
             bm25_rank=2,
         )
@@ -212,6 +235,8 @@ class CliFlagsTests(unittest.TestCase):
             chunk_type="text",
             text="hello world",
             fusion_score=0.87654,
+            rerank_score=None,
+            final_score=0.87654,
             vector_rank=1,
             bm25_rank=1,
         )
@@ -234,6 +259,37 @@ class CliFlagsTests(unittest.TestCase):
                 search_mock.assert_called_once()
                 self.assertEqual(search_mock.call_args.kwargs["search_mode"], expected_mode)
                 self.assertEqual(search_mock.call_args.kwargs["api_key"], expected_api_key)
+
+    def test_query_passes_reranker_options_to_pipeline(self) -> None:
+        assert build_parser is not None
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "query",
+                "hello",
+                "--use-local-embedding",
+                "--use-reranker",
+                "--reranker-model",
+                "tomaarsen/Qwen3-Reranker-0.6B-seq-cls",
+                "--rerank-top-k",
+                "16",
+                "--reranker-device",
+                "mps",
+            ]
+        )
+
+        with mock.patch("semsearch.cli.search", return_value=[]) as search_mock:
+            buffer = io.StringIO()
+            with redirect_stdout(buffer):
+                exit_code = args.func(args)
+
+        self.assertEqual(exit_code, 0)
+        search_mock.assert_called_once()
+        kwargs = search_mock.call_args.kwargs
+        self.assertTrue(kwargs["use_reranker"])
+        self.assertEqual(kwargs["reranker_model"], "tomaarsen/Qwen3-Reranker-0.6B-seq-cls")
+        self.assertEqual(kwargs["rerank_top_k"], 16)
+        self.assertEqual(kwargs["reranker_device"], "mps")
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@
 本專案提供本機優先的語意搜尋系統，目標資料是卡片式 Markdown。
 
 - Embedding provider: OpenRouter or local Ollama
+- Optional reranker: local Qwen3 reranker via Transformers
 - Default model (OpenRouter): `google/gemini-embedding-001`
 - Default model (Ollama): `qwen3-embedding:0.6b`
 - Retrieval: `search` (BM25), `vsearch` (vector), `query` (hybrid: `BM25 + Vector + RRF`)
@@ -118,6 +119,7 @@ semsearch vsearch "how to login" --top-k 8 --use-local-embedding
 semsearch query "user authentication" --top-k 8
 semsearch query "MULH sign extension 高位錯誤" --top-k 8 --show-chunk-type
 semsearch query "non-blocking assignment 在跨週期傳遞的重點" --collection notes --top-k 8
+semsearch query "pipeline hazard" --use-reranker --rerank-top-k 20
 ```
 
 本地 Ollama 模式查詢：
@@ -126,6 +128,22 @@ semsearch query "non-blocking assignment 在跨週期傳遞的重點" --collecti
 semsearch vsearch "how to login" --use-local-embedding --top-k 8
 semsearch query "non-blocking assignment 在跨週期傳遞的重點" --use-local-embedding --top-k 8
 ```
+
+本地 Qwen reranker 重排序（Mac 建議）：
+
+```bash
+semsearch query "non-blocking assignment 在跨週期傳遞的重點" \
+  --use-local-embedding \
+  --use-reranker \
+  --reranker-model tomaarsen/Qwen3-Reranker-0.6B-seq-cls \
+  --reranker-device auto \
+  --rerank-top-k 20
+```
+
+- reranker 只會重排前 `--rerank-top-k` 個候選 chunk，不會重新做整庫檢索。
+- `--use-local-embedding` 與 `--use-reranker` 分開控制；embedding 可走 Ollama，reranker 走本地 Transformers。
+- 在 Apple Silicon 上，`--reranker-device auto` 會優先使用 MPS，否則 fallback 到 CPU。
+- 第一次啟用 reranker 會下載 Hugging Face 模型，預設模型是 `tomaarsen/Qwen3-Reranker-0.6B-seq-cls`。
 
 ## 7. 評估
 
@@ -141,6 +159,9 @@ semsearch eval --golden tests/golden_queries.yaml --use-local-embedding
 - `--model` 可覆寫預設模型：
   - 未加 `--use-local-embedding`：預設 `google/gemini-embedding-001`
   - 加上 `--use-local-embedding`：預設 `qwen3-embedding:0.6b`
+- `--use-reranker` 會在召回後額外執行本地 Qwen reranker 重排。
+- `--reranker-model` 預設為 `tomaarsen/Qwen3-Reranker-0.6B-seq-cls`。
+- `--reranker-device` 支援 `auto`、`mps`、`cpu`；Mac 建議使用 `auto`。
 - `ingest/vsearch/query/eval` 需要使用與索引建立時一致的 provider/model。
 - 若設定不一致，系統會報錯並提示先用正確參數重新 `ingest`。
 
@@ -150,6 +171,7 @@ semsearch eval --golden tests/golden_queries.yaml --use-local-embedding
 - `semsearch/pipeline.py`: ingest/search/vsearch/query/eval 主流程
 - `semsearch/markdown_ingest.py`: Markdown 解析與切塊
 - `semsearch/embeddings.py`: OpenRouter/Ollama embedding client + provider resolver
+- `semsearch/rerankers.py`: local Qwen reranker client + device/model resolver
 - `semsearch/storage.py`: SQLite schema 與資料存取
 - `semsearch/vector_index.py`: FAISS 建索引與 numpy fallback 查詢
 - `semsearch/retrieval.py`: BM25、RRF、結果去重

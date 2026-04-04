@@ -13,6 +13,12 @@ from semsearch.embeddings import (
     OllamaEmbedder,
     resolve_embedder,
 )
+from semsearch.rerankers import (
+    DEFAULT_QWEN_RERANKER_MODEL,
+    QwenReranker,
+    SubprocessReranker,
+    resolve_reranker,
+)
 
 
 class EmbeddingsTests(unittest.TestCase):
@@ -59,6 +65,43 @@ class EmbeddingsTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(EmbeddingError, "ollama serve"):
                 embedder.embed_texts(["hello"], input_type="document")
+
+    def test_resolve_reranker_uses_subprocess_on_darwin(self) -> None:
+        with mock.patch("semsearch.rerankers.platform.system", return_value="Darwin"):
+            runtime = resolve_reranker(
+                use_reranker=True,
+                model=None,
+                device="auto",
+            )
+
+        self.assertIsNotNone(runtime)
+        assert runtime is not None
+        self.assertEqual(runtime.model, DEFAULT_QWEN_RERANKER_MODEL)
+        self.assertEqual(runtime.provider, "local-transformers-subprocess")
+        self.assertIsInstance(runtime.reranker, SubprocessReranker)
+
+    def test_subprocess_reranker_parses_scores(self) -> None:
+        reranker = SubprocessReranker(
+            model=DEFAULT_QWEN_RERANKER_MODEL,
+            device="cpu",
+            instruction="test",
+        )
+        completed = mock.Mock(returncode=0, stdout='{"scores":[0.2,0.8]}', stderr="")
+        with mock.patch("semsearch.rerankers.subprocess.run", return_value=completed) as run_mock:
+            scores = reranker.score("q", ["a", "b"])
+
+        self.assertEqual(scores, [0.2, 0.8])
+        run_mock.assert_called_once()
+
+    def test_qwen_reranker_seq_cls_formats_chat_prompt(self) -> None:
+        reranker = QwenReranker(model="tomaarsen/Qwen3-Reranker-0.6B-seq-cls", device="cpu")
+        formatted = reranker._format_input("query text", "doc text")
+
+        self.assertIn("<|im_start|>system", formatted)
+        self.assertIn('<Instruct>: Given a search query, retrieve relevant passages that answer the query.', formatted)
+        self.assertIn("<Query>: query text", formatted)
+        self.assertIn("<Document>: doc text", formatted)
+        self.assertIn("<|im_start|>assistant", formatted)
 
 
 if __name__ == "__main__":
