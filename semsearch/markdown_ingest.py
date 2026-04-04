@@ -30,6 +30,14 @@ def _extract_title(raw: str, default: str) -> str:
     return match.group(1).strip()
 
 
+def _strip_tags_from_text(text: str) -> str:
+    lines = [_TAG_RE.sub("", line) for line in text.splitlines()]
+    cleaned = "\n".join(lines)
+    cleaned = re.sub(r"\s+([,.;:!?)}\]])", r"\1", cleaned)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    return cleaned.strip()
+
+
 def _split_sections(raw: str, title: str) -> list[Section]:
     lines = raw.splitlines()
     sections: list[Section] = []
@@ -64,20 +72,20 @@ def _extract_code_and_text(section_text: str) -> tuple[str, list[tuple[str, str]
 
     for match in _CODE_BLOCK_RE.finditer(section_text):
         start, end = match.span()
-        before = section_text[cursor:start]
+        before = _strip_tags_from_text(section_text[cursor:start])
         prose_parts.append(before)
 
         paragraph_candidates = [p.strip() for p in re.split(r"\n\s*\n", before) if p.strip()]
         context_prefix = paragraph_candidates[-1] if paragraph_candidates else ""
 
         language = match.group("lang").strip()
-        code = match.group("code").strip()
+        code = _strip_tags_from_text(match.group("code").strip())
         if code:
             code_text = f"language: {language}\n{code}" if language else code
             code_chunks.append((code_text, context_prefix))
         cursor = end
 
-    prose_parts.append(section_text[cursor:])
+    prose_parts.append(_strip_tags_from_text(section_text[cursor:]))
     prose_text = "\n".join(p for p in prose_parts if p).strip()
     return prose_text, code_chunks
 

@@ -168,6 +168,7 @@ semsearch context rm collection://notes/api
 - 檔案 `1200 ~ 3500` 字：按 `##` 區段切
 - 檔案 `> 3500` 字：區段內再切成約 800 token，overlap 120
 - 每個 code fence 獨立成 `chunk_type=code`，並保留 `context_prefix`
+- `#tag` 會保留在 metadata，不會進入 chunk 內容或 embedding 索引
 
 ## 12. 注意事項
 
