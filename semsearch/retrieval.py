@@ -8,7 +8,14 @@ from .storage import Storage
 from .tokenize import tokenize_for_bm25
 
 
-def bm25_search(storage: Storage, query: str, top_k: int, k1: float = 1.5, b: float = 0.75) -> list[tuple[int, float]]:
+def bm25_search(
+    storage: Storage,
+    query: str,
+    top_k: int,
+    k1: float = 1.5,
+    b: float = 0.75,
+    collection_ids: list[str] | None = None,
+) -> list[tuple[int, float]]:
     terms = tokenize_for_bm25(query)
     if not terms:
         return []
@@ -17,7 +24,7 @@ def bm25_search(storage: Storage, query: str, top_k: int, k1: float = 1.5, b: fl
     if n_docs <= 0 or avgdl <= 0:
         return []
 
-    postings = storage.bm25_postings(terms)
+    postings = storage.bm25_postings(terms, collection_ids=collection_ids)
     scores: dict[int, float] = defaultdict(float)
 
     for row in postings:
@@ -88,15 +95,18 @@ def rerank_with_doc_diversity(
     for chunk_id, score in final_ids[:top_k]:
         row = rows[chunk_id]
         results.append(
-            SearchResult(
-                chunk_rowid=chunk_id,
-                chunk_id=str(row["chunk_id"]),
-                doc_id=str(row["doc_id"]),
-                title=str(row["title"]),
-                source_path=str(row["source_path"]),
-                section_path=str(row["section_path"]),
-                chunk_type=str(row["chunk_type"]),
-                text=str(row["text"]),
+                SearchResult(
+                    chunk_rowid=chunk_id,
+                    chunk_id=str(row["chunk_id"]),
+                    doc_id=str(row["doc_id"]),
+                    collection_id=str(row["collection_id"]),
+                    collection_name=str(row["collection_name"]),
+                    title=str(row["title"]),
+                    source_path=str(row["source_path"]),
+                    relative_path=str(row["relative_path"]),
+                    section_path=str(row["section_path"]),
+                    chunk_type=str(row["chunk_type"]),
+                    text=str(row["text"]),
                 fusion_score=float(score),
                 vector_rank=vector_rank.get(chunk_id),
                 bm25_rank=bm25_rank.get(chunk_id),

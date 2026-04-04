@@ -6,12 +6,17 @@ from dataclasses import dataclass
 @dataclass(slots=True)
 class DocumentRecord:
     doc_id: str
+    collection_id: str
+    collection_name: str
     title: str
     source_path: str
+    relative_path: str
     tags: list[str]
     out_links: list[str]
     updated_at: str
-    content_hash: str
+    source_hash: str
+    context_hash: str
+    document_hash: str
     char_count: int
 
 
@@ -19,15 +24,19 @@ class DocumentRecord:
 class ChunkDraft:
     chunk_id: str
     doc_id: str
+    collection_id: str
+    collection_name: str
     title: str
     source_path: str
+    relative_path: str
     section_path: str
     chunk_type: str
     context_prefix: str
+    context_text: str
     text: str
     search_text: str
     token_count: int
-    content_hash: str
+    embedding_hash: str
     tags: list[str]
     out_links: list[str]
     updated_at: str
@@ -38,8 +47,11 @@ class SearchResult:
     chunk_rowid: int
     chunk_id: str
     doc_id: str
+    collection_id: str
+    collection_name: str
     title: str
     source_path: str
+    relative_path: str
     section_path: str
     chunk_type: str
     text: str

@@ -6,7 +6,8 @@
 - Default model (OpenRouter): `google/gemini-embedding-001`
 - Default model (Ollama): `qwen3-embedding:0.6b`
 - Retrieval: Hybrid (`BM25 + Vector`) + RRF
-- Storage: SQLite + FAISS
+- Storage: SQLite + FAISS / numpy fallback
+- Collection registry: collection:// scopes + context scopes
 - Interface: CLI
 
 ## 1. 建立 Anaconda 環境
@@ -22,6 +23,12 @@ conda activate semsearch
 pip install -e .
 ```
 
+若想啟用 FAISS 後端，可改用：
+
+```bash
+pip install -e ".[faiss]"
+```
+
 ## 3. 設定 API Key（OpenRouter 模式）
 
 ```bash
@@ -30,34 +37,40 @@ export OPENROUTER_API_KEY="<YOUR_OPENROUTER_API_KEY>"
 
 若使用本地 Ollama 模式（`--use-local-embedding`），不需要設定 `OPENROUTER_API_KEY`。
 
-## 4. 設定待嵌入資料夾（可選）
+## 4. 設定 collection registry
 
-可用環境變數設定 `ingest` 的預設來源路徑：
+先建立 collection，之後 `ingest` 就直接以 collection 為主：
 
 ```bash
-export SEMSEARCH_SOURCE="/你的/Markdown/資料夾"
+semsearch collection add notes "/你的/Markdown/資料夾"
 ```
 
-若同時有帶 `--source`，會以 `--source` 為準。
+若要使用不同的 registry 檔，可設定：
+
+```bash
+export SEMSEARCH_COLLECTIONS="data_index/collections.yml"
+```
+
+`SEMSEARCH_SOURCE` 與 `--source` 仍保留給舊流程相容使用，但新流程不建議再直接依賴它們。
 
 ## 5. 建立索引
 
 ```bash
-semsearch ingest --source "1 - Cards" --rebuild
+semsearch ingest --collection notes --rebuild
 ```
 
 輸出內容包含：文件數、chunk 數量、embedding 維度、SQLite 路徑與 FAISS 路徑。
 
-若已設定 `SEMSEARCH_SOURCE`，可省略 `--source`：
+若 collection 已經存在，之後可以直接用它來做增量更新：
 
 ```bash
-semsearch ingest --rebuild
+semsearch ingest --collection notes --rebuild
 ```
 
 增量更新（推薦日常使用）：
 
 ```bash
-semsearch ingest --source "1 - Cards"
+semsearch ingest --collection notes
 ```
 
 本地 Ollama 模式建立索引：
@@ -65,24 +78,27 @@ semsearch ingest --source "1 - Cards"
 ```bash
 ollama pull qwen3-embedding:0.6b
 ollama serve
-semsearch ingest --source "1 - Cards" --use-local-embedding --rebuild
+semsearch ingest --collection notes --use-local-embedding --rebuild
 ```
 
 - 不帶 `--rebuild` 時，系統會比較檔案內容 hash，只更新新增/變更檔案，並刪除索引中已不存在的檔案。
 - 系統會使用 embedding 快取（`content_hash + model`）避免重複呼叫 API。
 - 即使使用 `--rebuild`，只要內容 hash 曾經快取過，仍會直接重用，不會再次上傳到 embedding API。
 
-### Source 與資料庫路徑的關係
+### Collection 與資料庫路徑的關係
 
-- `--source` 只決定「這次 ingest 要讀哪個資料夾」。
-- 是否為不同資料庫，取決於 `--db-path` 與 `--faiss-path`，不是 `--source`。
-- 若只更換 `--source`、但沿用同一組 `--db-path/--faiss-path`，會覆蓋同一套索引（看不到的舊文件會被當成刪除）。
+- `collection` 決定「這次 ingest 要讀哪個 collection」。
+- 是否為不同資料庫，取決於 `--db-path` 與 `--faiss-path`，不是 collection 名稱。
+- 若只更換 collection、但沿用同一組 `--db-path/--faiss-path`，會覆蓋同一套索引（看不到的舊文件會被當成刪除）。
+- collection registry 另外由 `--collections-path` 管理，預設會在 `data_index/collections.yml`。
 
 範例：建立兩套獨立索引（A 與 B）
 
 ```bash
-semsearch ingest --source "/path/A" --db-path data_index/A.db --faiss-path data_index/A.faiss
-semsearch ingest --source "/path/B" --db-path data_index/B.db --faiss-path data_index/B.faiss
+semsearch collection add A "/path/A"
+semsearch collection add B "/path/B"
+semsearch ingest --collection A --db-path data_index/A.db --faiss-path data_index/A.faiss
+semsearch ingest --collection B --db-path data_index/B.db --faiss-path data_index/B.faiss
 ```
 
 ## 6. 查詢
@@ -90,6 +106,7 @@ semsearch ingest --source "/path/B" --db-path data_index/B.db --faiss-path data_
 ```bash
 semsearch query "non-blocking assignment 在跨週期傳遞的重點" --top-k 8
 semsearch query "MULH sign extension 高位錯誤" --top-k 8 --show-chunk-type
+semsearch query "non-blocking assignment 在跨週期傳遞的重點" --collection notes --top-k 8
 ```
 
 本地 Ollama 模式查詢：
@@ -122,18 +139,34 @@ semsearch eval --golden tests/golden_queries.yaml --use-local-embedding
 - `semsearch/markdown_ingest.py`: Markdown 解析與切塊
 - `semsearch/embeddings.py`: OpenRouter/Ollama embedding client + provider resolver
 - `semsearch/storage.py`: SQLite schema 與資料存取
-- `semsearch/vector_index.py`: FAISS 建索引與查詢
+- `semsearch/vector_index.py`: FAISS 建索引與 numpy fallback 查詢
 - `semsearch/retrieval.py`: BM25、RRF、結果去重
+- `semsearch/collections.py`: collection registry 與 context 管理
 - `tests/golden_queries.yaml`: 第一版 golden set
 
-## 10. Chunk 策略
+## 10. Collection 與 Context
+
+```bash
+semsearch collection add notes "1 - Cards"
+semsearch collection list
+semsearch context add collection://notes "這個 collection 是硬體筆記"
+semsearch context add collection://notes/api "API 相關內容要優先看規格"
+semsearch context list notes
+semsearch context rm collection://notes/api
+```
+
+- `collection` 用來定義 collection 的根目錄與掃描 mask。
+- `context` 用來加上 collection-wide 或 path-specific 的額外背景文字。
+- `query` 預設只看 `include-by-default=true` 的 collections；也可以用 `--collection` 指定單一 collection。
+
+## 11. Chunk 策略
 
 - 檔案 `< 1200` 字：整篇一塊
 - 檔案 `1200 ~ 3500` 字：按 `##` 區段切
 - 檔案 `> 3500` 字：區段內再切成約 800 token，overlap 120
 - 每個 code fence 獨立成 `chunk_type=code`，並保留 `context_prefix`
 
-## 11. 注意事項
+## 12. 注意事項
 
 - `query` 與 `eval` 每次都會對查詢文字呼叫一次 embedding API。
 - `ingest` 預設是增量更新；`--rebuild` 會重建文件/BM25/FAISS，但會保留 embedding 快取以降低重建成本。

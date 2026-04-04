@@ -1,9 +1,12 @@
+from __future__ import annotations
+
 import math
 from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
 
+from .collections import DEFAULT_COLLECTIONS_PATH, CollectionConfig, CollectionRegistry
 from .embeddings import resolve_embedder
 from .markdown_ingest import parse_markdown
 from .models import ChunkDraft, SearchResult
@@ -22,6 +25,8 @@ class IngestStats:
     embedding_provider: str
     embedding_model: str
     source: str
+    collection_id: str
+    collection_name: str
     updated_documents: int
     deleted_documents: int
     new_embedding_hashes: int
@@ -36,9 +41,11 @@ class EvalStats:
     queries: int
 
 
-def _collect_markdown_files(source: Path) -> list[Path]:
-    files = []
-    for path in sorted(source.glob("*.md")):
+def _collect_markdown_files(source: Path, mask: str) -> list[Path]:
+    files: list[Path] = []
+    for path in sorted(source.glob(mask)):
+        if not path.is_file():
+            continue
         if is_hidden_or_ignored(path):
             continue
         files.append(path)
@@ -77,6 +84,54 @@ def _ensure_embedding_profile_matches(
         )
 
 
+def _resolve_ingest_collection(
+    registry: CollectionRegistry,
+    source: Path,
+    collection: str | None,
+) -> CollectionConfig:
+    source_root = source.expanduser().resolve()
+    if collection:
+        collection_id, prefix = registry.resolve_context_target(collection)
+        if prefix:
+            raise RuntimeError(
+                "Collection filters do not accept path prefixes. Use a collection name or id."
+            )
+        if collection_id is None:
+            raise RuntimeError(f"Collection not found: {collection}")
+        resolved = registry.find_collection(collection_id)
+        resolved_root = resolved.root_path_resolved()
+        if resolved_root != source_root:
+            raise RuntimeError(
+                f"Source path mismatch for collection {resolved.name}: "
+                f"expected {resolved_root}, got {source_root}"
+            )
+        return resolved
+
+    matched = registry.find_by_root(source_root)
+    if matched is not None:
+        return matched
+
+    return registry.ensure_collection_for_source(source_root)
+
+
+def _resolve_query_collections(
+    registry: CollectionRegistry,
+    collection: str | None,
+) -> list[str] | None:
+    if collection:
+        collection_id, prefix = registry.resolve_context_target(collection)
+        if prefix:
+            raise RuntimeError(
+                "Collection filters do not accept path prefixes. Use a collection name or id."
+            )
+        if collection_id is None:
+            raise RuntimeError(f"Collection not found: {collection}")
+        return [collection_id]
+    if not registry.collections:
+        return None
+    return [item.collection_id for item in registry.default_collections()]
+
+
 def ingest(
     source: Path,
     db_path: Path,
@@ -85,15 +140,29 @@ def ingest(
     model: str,
     rebuild: bool,
     use_local_embedding: bool = False,
+    collections_path: Path = DEFAULT_COLLECTIONS_PATH,
+    collection: str | None = None,
 ) -> IngestStats:
-    files = _collect_markdown_files(source)
+    registry = CollectionRegistry.load(collections_path)
+    collection_cfg = _resolve_ingest_collection(registry, source, collection)
+    source_root = collection_cfg.root_path_resolved()
+
+    files = _collect_markdown_files(source_root, collection_cfg.mask)
     if not files:
-        raise RuntimeError(f"No markdown files found in {source}")
+        raise RuntimeError(f"No markdown files found in {source_root}")
 
     documents = []
     chunks: list[ChunkDraft] = []
     for path in files:
-        doc, drafts = parse_markdown(path)
+        relative_path = path.relative_to(source_root).as_posix()
+        context_text = registry.render_context_text(collection_cfg.collection_id, relative_path)
+        doc, drafts = parse_markdown(
+            path,
+            collection_id=collection_cfg.collection_id,
+            collection_name=collection_cfg.name,
+            relative_path=relative_path,
+            context_text=context_text,
+        )
         documents.append(doc)
         chunks.extend(drafts)
 
@@ -102,35 +171,35 @@ def ingest(
     if rebuild:
         storage.clear_for_rebuild()
 
-    source_to_doc = {doc.source_path: doc for doc in documents}
+    source_to_doc = {doc.doc_id: doc for doc in documents}
     source_to_chunks: dict[str, list[ChunkDraft]] = {}
     for chunk in chunks:
-        source_to_chunks.setdefault(chunk.source_path, []).append(chunk)
+        source_to_chunks.setdefault(chunk.doc_id, []).append(chunk)
 
-    existing_hash_by_source = storage.document_hashes_by_source()
+    existing_hash_by_doc = storage.document_hashes(collection_id=collection_cfg.collection_id)
 
-    current_sources = set(source_to_doc.keys())
-    existing_sources = set(existing_hash_by_source.keys())
-    deleted_sources = sorted(existing_sources - current_sources)
+    current_doc_ids = set(source_to_doc.keys())
+    existing_doc_ids = set(existing_hash_by_doc.keys())
+    deleted_doc_ids = sorted(existing_doc_ids - current_doc_ids)
 
     if rebuild:
-        updated_sources = sorted(current_sources)
+        updated_doc_ids = sorted(current_doc_ids)
     else:
-        updated_sources = sorted(
-            source_path
-            for source_path, doc in source_to_doc.items()
-            if existing_hash_by_source.get(source_path) != doc.content_hash
+        updated_doc_ids = sorted(
+            doc_id
+            for doc_id, doc in source_to_doc.items()
+            if existing_hash_by_doc.get(doc_id) != doc.document_hash
         )
 
-    to_delete_sources = sorted(set(updated_sources) | set(deleted_sources))
-    storage.delete_documents_by_source(to_delete_sources)
+    doc_ids_to_delete = sorted(set(updated_doc_ids) | set(deleted_doc_ids))
+    storage.delete_documents_by_doc_ids(doc_ids_to_delete)
 
-    for source_path in updated_sources:
-        storage.insert_document(source_to_doc[source_path])
+    for doc_id in updated_doc_ids:
+        storage.insert_document(source_to_doc[doc_id])
 
     chunks_to_insert: list[ChunkDraft] = []
-    for source_path in updated_sources:
-        chunks_to_insert.extend(source_to_chunks.get(source_path, []))
+    for doc_id in updated_doc_ids:
+        chunks_to_insert.extend(source_to_chunks.get(doc_id, []))
 
     runtime = resolve_embedder(
         use_local_embedding=use_local_embedding,
@@ -142,16 +211,23 @@ def ingest(
 
     unique_hash_to_text: dict[str, str] = {}
     for chunk in chunks_to_insert:
-        unique_hash_to_text.setdefault(chunk.content_hash, chunk.search_text)
+        unique_hash_to_text.setdefault(chunk.embedding_hash, chunk.search_text)
 
     requested_hashes = list(unique_hash_to_text.keys())
-    cached_vectors = storage.embedding_cache_by_hashes(model=cache_key, content_hashes=requested_hashes)
+    cached_vectors = storage.embedding_cache_by_hashes(
+        model=cache_key,
+        embedding_hashes=requested_hashes,
+    )
     missing_hashes = [h for h in requested_hashes if h not in cached_vectors]
     if missing_hashes:
         texts = [unique_hash_to_text[h] for h in missing_hashes]
         embedded = embedder.embed_texts(texts, input_type="document")
-        for content_hash, vector in zip(missing_hashes, embedded.vectors, strict=True):
-            storage.upsert_embedding_cache(model=cache_key, content_hash=content_hash, vector=vector)
+        for embedding_hash, vector in zip(missing_hashes, embedded.vectors, strict=True):
+            storage.upsert_embedding_cache(
+                model=cache_key,
+                embedding_hash=embedding_hash,
+                vector=vector,
+            )
 
     for chunk in chunks_to_insert:
         rowid = storage.insert_chunk(chunk)
@@ -163,8 +239,12 @@ def ingest(
     if missing_cache_hashes:
         texts = [missing_cache[h] for h in missing_cache_hashes]
         embedded = embedder.embed_texts(texts, input_type="document")
-        for content_hash, vector in zip(missing_cache_hashes, embedded.vectors, strict=True):
-            storage.upsert_embedding_cache(model=cache_key, content_hash=content_hash, vector=vector)
+        for embedding_hash, vector in zip(missing_cache_hashes, embedded.vectors, strict=True):
+            storage.upsert_embedding_cache(
+                model=cache_key,
+                embedding_hash=embedding_hash,
+                vector=vector,
+            )
 
     storage.clear_bm25_derived()
     term_df = storage.compute_term_df()
@@ -211,9 +291,11 @@ def ingest(
         embedding_dim=len(vectors[0]),
         embedding_provider=runtime.provider,
         embedding_model=runtime.model,
-        source=str(source),
-        updated_documents=len(updated_sources),
-        deleted_documents=len(deleted_sources),
+        source=str(source_root),
+        collection_id=collection_cfg.collection_id,
+        collection_name=collection_cfg.name,
+        updated_documents=len(updated_doc_ids),
+        deleted_documents=len(deleted_doc_ids),
         new_embedding_hashes=new_hashes,
         reused_embedding_hashes=reused_hashes,
     )
@@ -229,10 +311,18 @@ def search(
     vector_top_k: int = 20,
     bm25_top_k: int = 20,
     use_local_embedding: bool = False,
+    collections_path: Path = DEFAULT_COLLECTIONS_PATH,
+    collection: str | None = None,
 ) -> list[SearchResult]:
     normalized_query = normalize_query_text(query)
     if not normalized_query:
         return []
+
+    registry = CollectionRegistry.load(collections_path)
+    selected_collection_ids = _resolve_query_collections(registry, collection)
+    collection_name_by_id = {
+        item.collection_id: item.name for item in registry.collections
+    }
 
     runtime = resolve_embedder(
         use_local_embedding=use_local_embedding,
@@ -254,16 +344,32 @@ def search(
 
         index = VectorIndex(faiss_path)
         vector_results = index.search(embedded.vectors[0], top_k=vector_top_k)
+        if selected_collection_ids is not None:
+            allowed_collection_ids = set(selected_collection_ids)
+            rows = storage.chunks_by_ids([chunk_id for chunk_id, _score in vector_results])
+            vector_results = [
+                (chunk_id, score)
+                for chunk_id, score in vector_results
+                if chunk_id in rows and str(rows[chunk_id]["collection_id"]) in allowed_collection_ids
+            ]
 
-        bm25_results = bm25_search(storage, normalized_query, top_k=bm25_top_k)
+        bm25_results = bm25_search(
+            storage,
+            normalized_query,
+            top_k=bm25_top_k,
+            collection_ids=selected_collection_ids,
+        )
         fused, vector_rank, bm25_rank = reciprocal_rank_fusion(vector_results, bm25_results, k=60)
-        return rerank_with_doc_diversity(
+        results = rerank_with_doc_diversity(
             storage,
             fused=fused,
             vector_rank=vector_rank,
             bm25_rank=bm25_rank,
             top_k=top_k,
         )
+        for item in results:
+            item.collection_name = collection_name_by_id.get(item.collection_id, item.collection_name)
+        return results
     finally:
         storage.close()
 
@@ -275,6 +381,8 @@ def evaluate(
     api_key: str | None,
     model: str,
     use_local_embedding: bool = False,
+    collections_path: Path = DEFAULT_COLLECTIONS_PATH,
+    collection: str | None = None,
 ) -> tuple[EvalStats, list[dict]]:
     data = yaml.safe_load(golden_path.read_text(encoding="utf-8"))
     queries = data.get("queries", [])
@@ -300,9 +408,11 @@ def evaluate(
             top_k=10,
             vector_top_k=20,
             bm25_top_k=20,
+            collections_path=collections_path,
+            collection=collection,
         )
 
-        ranked_docs = [Path(r.source_path).name for r in results]
+        ranked_docs = [Path(r.relative_path).name for r in results]
         relevant_set = set(relevant_patterns)
 
         matched_patterns_for_recall: set[str] = set()

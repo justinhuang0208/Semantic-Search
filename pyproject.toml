@@ -7,9 +7,11 @@ requires-python = ">=3.11"
 dependencies = [
   "numpy>=1.26",
   "requests>=2.31",
-  "PyYAML>=6.0",
-  "faiss-cpu>=1.8.0"
+  "PyYAML>=6.0"
 ]
+
+[project.optional-dependencies]
+faiss = ["faiss-cpu>=1.8.0"]
 
 [project.scripts]
 semsearch = "semsearch.cli:main"

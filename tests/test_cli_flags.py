@@ -39,12 +39,18 @@ class CliFlagsTests(unittest.TestCase):
         parser = build_parser()
 
         args_ingest = parser.parse_args(["ingest", "--use-local-embedding"])
+        args_ingest_legacy = parser.parse_args(["ingest", "--source", "legacy"])
         args_query = parser.parse_args(["query", "hello", "--use-local-embedding"])
         args_eval = parser.parse_args(["eval", "--use-local-embedding"])
+        args_collection = parser.parse_args(["collection", "list"])
+        args_context = parser.parse_args(["context", "add", "/", "--text", "hello"])
 
         self.assertTrue(args_ingest.use_local_embedding)
+        self.assertEqual(args_ingest_legacy.source, "legacy")
         self.assertTrue(args_query.use_local_embedding)
         self.assertTrue(args_eval.use_local_embedding)
+        self.assertEqual(args_collection.command, "collection")
+        self.assertEqual(args_context.command, "context")
 
 
 if __name__ == "__main__":

@@ -82,7 +82,19 @@ def _extract_code_and_text(section_text: str) -> tuple[str, list[tuple[str, str]
     return prose_text, code_chunks
 
 
-def parse_markdown(path: Path) -> tuple[DocumentRecord, list[ChunkDraft]]:
+def _join_context_parts(*parts: str) -> str:
+    cleaned = [part.strip() for part in parts if part and part.strip()]
+    return "\n\n".join(cleaned)
+
+
+def parse_markdown(
+    path: Path,
+    *,
+    collection_id: str,
+    collection_name: str,
+    relative_path: str,
+    context_text: str,
+) -> tuple[DocumentRecord, list[ChunkDraft]]:
     raw = path.read_text(encoding="utf-8")
     title = _extract_title(raw, path.stem)
 
@@ -93,18 +105,25 @@ def parse_markdown(path: Path) -> tuple[DocumentRecord, list[ChunkDraft]]:
     out_links.update(f"wiki://{name.strip()}" for name in _WIKI_RE.findall(raw))
     sorted_links = sorted(out_links)
 
-    doc_id = path.stem
-    doc_content_hash = sha256_text(raw)
+    doc_id = f"{collection_id}::{relative_path}"
+    source_hash = sha256_text(raw)
+    context_hash = sha256_text(context_text)
+    document_hash = sha256_text(f"{source_hash}::{context_hash}")
     char_count = len(raw)
 
     document = DocumentRecord(
         doc_id=doc_id,
+        collection_id=collection_id,
+        collection_name=collection_name,
         title=title,
         source_path=str(path),
+        relative_path=relative_path,
         tags=tags,
         out_links=sorted_links,
         updated_at=updated_at,
-        content_hash=doc_content_hash,
+        source_hash=source_hash,
+        context_hash=context_hash,
+        document_hash=document_hash,
         char_count=char_count,
     )
 
@@ -126,22 +145,26 @@ def parse_markdown(path: Path) -> tuple[DocumentRecord, list[ChunkDraft]]:
         clean = text.strip()
         if not clean:
             return
-        token_count = rough_token_count(clean)
-        search_text = clean
+        search_text = _join_context_parts(context_text, clean)
+        token_count = rough_token_count(search_text)
         chunk_id = f"{doc_id}::text::{idx}"
         drafts.append(
             ChunkDraft(
                 chunk_id=chunk_id,
                 doc_id=doc_id,
+                collection_id=collection_id,
+                collection_name=collection_name,
                 title=title,
                 source_path=str(path),
+                relative_path=relative_path,
                 section_path=section_path,
                 chunk_type="text",
                 context_prefix="",
+                context_text=context_text,
                 text=clean,
                 search_text=search_text,
                 token_count=token_count,
-                content_hash=sha256_text(f"text::{search_text}"),
+                embedding_hash=sha256_text(f"text::{search_text}"),
                 tags=tags,
                 out_links=sorted_links,
                 updated_at=updated_at,
@@ -168,22 +191,30 @@ def parse_markdown(path: Path) -> tuple[DocumentRecord, list[ChunkDraft]]:
 
     code_idx = 0
     for section_path, code_text, context_prefix in code_chunks:
-        searchable = code_text if not context_prefix else f"context:\n{context_prefix}\n\ncode:\n{code_text}"
+        searchable = _join_context_parts(
+            context_text,
+            f"context:\n{context_prefix}" if context_prefix else "",
+            f"code:\n{code_text}",
+        )
         token_count = rough_token_count(searchable)
         chunk_id = f"{doc_id}::code::{code_idx}"
         drafts.append(
             ChunkDraft(
                 chunk_id=chunk_id,
                 doc_id=doc_id,
+                collection_id=collection_id,
+                collection_name=collection_name,
                 title=title,
                 source_path=str(path),
+                relative_path=relative_path,
                 section_path=section_path,
                 chunk_type="code",
                 context_prefix=context_prefix,
+                context_text=context_text,
                 text=code_text,
                 search_text=searchable,
                 token_count=token_count,
-                content_hash=sha256_text(f"code::{searchable}"),
+                embedding_hash=sha256_text(f"code::{searchable}"),
                 tags=tags,
                 out_links=sorted_links,
                 updated_at=updated_at,

@@ -1,13 +1,28 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
-import faiss
 import numpy as np
+
+try:  # pragma: no cover - optional dependency
+    import faiss  # type: ignore[import-not-found]
+
+    FAISS_AVAILABLE = True
+except ModuleNotFoundError:  # pragma: no cover - exercised in this environment
+    faiss = None
+    FAISS_AVAILABLE = False
 
 
 class VectorIndexError(RuntimeError):
     pass
+
+
+@dataclass(slots=True)
+class _NumpyIndex:
+    ids: np.ndarray
+    vectors: np.ndarray
+    dim: int
 
 
 class VectorIndex:
@@ -23,29 +38,66 @@ class VectorIndex:
         matrix = np.vstack(vectors).astype(np.float32)
         id_array = np.asarray(ids, dtype=np.int64)
 
-        base = faiss.IndexFlatIP(dim)
-        index = faiss.IndexIDMap2(base)
-        index.add_with_ids(matrix, id_array)
-
         self.index_path.parent.mkdir(parents=True, exist_ok=True)
-        faiss.write_index(index, str(self.index_path))
+        if FAISS_AVAILABLE:
+            base = faiss.IndexFlatIP(dim)
+            index = faiss.IndexIDMap2(base)
+            index.add_with_ids(matrix, id_array)
+            faiss.write_index(index, str(self.index_path))
+            return
 
-    def load(self) -> faiss.Index:
+        with self.index_path.open("wb") as handle:
+            np.savez_compressed(handle, ids=id_array, vectors=matrix, dim=np.asarray([dim], dtype=np.int64))
+
+    def load(self) -> faiss.Index | _NumpyIndex:
         if not self.index_path.exists():
             raise VectorIndexError(f"FAISS index not found: {self.index_path}")
-        return faiss.read_index(str(self.index_path))
+
+        if FAISS_AVAILABLE:
+            try:
+                return faiss.read_index(str(self.index_path))
+            except Exception:
+                pass
+
+        with self.index_path.open("rb") as handle:
+            data = np.load(handle, allow_pickle=False)
+            try:
+                return _NumpyIndex(
+                    ids=np.asarray(data["ids"], dtype=np.int64),
+                    vectors=np.asarray(data["vectors"], dtype=np.float32),
+                    dim=int(np.asarray(data["dim"]).reshape(-1)[0]),
+                )
+            finally:
+                data.close()
 
     def search(self, query_vec: np.ndarray, top_k: int) -> list[tuple[int, float]]:
-        index = self.load()
+        loaded = self.load()
         q = np.asarray(query_vec, dtype=np.float32).reshape(1, -1)
         query_dim = int(q.shape[1])
-        index_dim = int(index.d)
+
+        if isinstance(loaded, _NumpyIndex):
+            index_dim = int(loaded.dim)
+            if query_dim != index_dim:
+                raise VectorIndexError(
+                    f"Query vector dimension {query_dim} does not match FAISS index dimension "
+                    f"{index_dim}. Rebuild index with matching embedding provider/model."
+                )
+            if loaded.vectors.size == 0:
+                return []
+            scores = loaded.vectors @ q[0]
+            order = np.argsort(-scores)[:top_k]
+            results: list[tuple[int, float]] = []
+            for idx in order:
+                results.append((int(loaded.ids[idx]), float(scores[idx])))
+            return results
+
+        index_dim = int(loaded.d)
         if query_dim != index_dim:
             raise VectorIndexError(
                 f"Query vector dimension {query_dim} does not match FAISS index dimension "
                 f"{index_dim}. Rebuild index with matching embedding provider/model."
             )
-        scores, ids = index.search(q, top_k)
+        scores, ids = loaded.search(q, top_k)
         results: list[tuple[int, float]] = []
         for chunk_id, score in zip(ids[0], scores[0], strict=False):
             if int(chunk_id) == -1:
