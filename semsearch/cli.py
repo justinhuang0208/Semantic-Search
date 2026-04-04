@@ -87,6 +87,63 @@ def _resolve_index_paths(
     return (db_default, faiss_default)
 
 
+def _add_search_args(parser: argparse.ArgumentParser, *, include_embedding: bool) -> None:
+    parser.add_argument("query")
+    parser.add_argument("--top-k", type=int, default=8)
+    parser.add_argument("--show-chunk-type", action="store_true")
+    parser.add_argument("--db-path", default=argparse.SUPPRESS)
+    parser.add_argument("--faiss-path", default=argparse.SUPPRESS)
+    parser.add_argument(
+        "--collections-path",
+        default=_default_collections_path(),
+        help=f"Collection registry path (default: {DEFAULT_COLLECTIONS_PATH} or ${COLLECTIONS_ENV_VAR})",
+    )
+    parser.add_argument(
+        "--collection",
+        help="Collection name or id to search. If omitted, include-by-default collections are used.",
+    )
+    if include_embedding:
+        parser.add_argument(
+            "--model",
+            help=(
+                "Embedding model. Defaults to "
+                f"{DEFAULT_OPENROUTER_MODEL} (OpenRouter) or {DEFAULT_OLLAMA_MODEL} (with --use-local-embedding)."
+            ),
+        )
+        parser.add_argument("--use-local-embedding", action="store_true")
+
+
+def _run_search_command(args: argparse.Namespace, *, search_mode: str) -> int:
+    collection_cfg = None
+    if args.collection:
+        registry = _load_registry(Path(args.collections_path))
+        collection_cfg = registry.find_collection(_resolve_collection_id(registry, args.collection))
+    db_path, faiss_path = _resolve_index_paths(args, collection_cfg)
+    if search_mode == "fulltext":
+        model = None
+        api_key = None
+        use_local_embedding = False
+    else:
+        model = _resolve_model(args.model, args.use_local_embedding)
+        api_key = _api_key(args.use_local_embedding)
+        use_local_embedding = args.use_local_embedding
+    results = search(
+        query=args.query,
+        db_path=db_path,
+        faiss_path=faiss_path,
+        api_key=api_key,
+        model=model,
+        use_local_embedding=use_local_embedding,
+        top_k=args.top_k,
+        collections_path=Path(args.collections_path),
+        collection=args.collection,
+        search_mode=search_mode,
+    )
+
+    print(json.dumps(_query_payload(results, show_chunk_type=args.show_chunk_type), ensure_ascii=False, indent=2))
+    return 0
+
+
 def cmd_ingest(args: argparse.Namespace) -> int:
     collections_path = Path(args.collections_path)
     registry = _load_registry(collections_path)
@@ -141,27 +198,16 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_query(args: argparse.Namespace) -> int:
-    collection_cfg = None
-    if args.collection:
-        registry = _load_registry(Path(args.collections_path))
-        collection_cfg = registry.find_collection(_resolve_collection_id(registry, args.collection))
-    db_path, faiss_path = _resolve_index_paths(args, collection_cfg)
-    model = _resolve_model(args.model, args.use_local_embedding)
-    results = search(
-        query=args.query,
-        db_path=db_path,
-        faiss_path=faiss_path,
-        api_key=_api_key(args.use_local_embedding),
-        model=model,
-        use_local_embedding=args.use_local_embedding,
-        top_k=args.top_k,
-        collections_path=Path(args.collections_path),
-        collection=args.collection,
-    )
+def cmd_search(args: argparse.Namespace) -> int:
+    return _run_search_command(args, search_mode="fulltext")
 
-    print(json.dumps(_query_payload(results, show_chunk_type=args.show_chunk_type), ensure_ascii=False, indent=2))
-    return 0
+
+def cmd_vsearch(args: argparse.Namespace) -> int:
+    return _run_search_command(args, search_mode="vector")
+
+
+def cmd_query(args: argparse.Namespace) -> int:
+    return _run_search_command(args, search_mode="hybrid")
 
 
 def _query_payload(results: list[SearchResult], *, show_chunk_type: bool) -> list[dict[str, object]]:
@@ -361,29 +407,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_ingest.add_argument("--rebuild", action="store_true")
     p_ingest.set_defaults(func=cmd_ingest)
 
-    p_query = sub.add_parser("query", help="Query indexed markdown chunks")
-    p_query.add_argument("query")
-    p_query.add_argument("--top-k", type=int, default=8)
-    p_query.add_argument("--show-chunk-type", action="store_true")
-    p_query.add_argument("--db-path", default=argparse.SUPPRESS)
-    p_query.add_argument("--faiss-path", default=argparse.SUPPRESS)
-    p_query.add_argument(
-        "--collections-path",
-        default=_default_collections_path(),
-        help=f"Collection registry path (default: {DEFAULT_COLLECTIONS_PATH} or ${COLLECTIONS_ENV_VAR})",
-    )
-    p_query.add_argument(
-        "--collection",
-        help="Collection name or id to search. If omitted, include-by-default collections are used.",
-    )
-    p_query.add_argument(
-        "--model",
-        help=(
-            "Embedding model. Defaults to "
-            f"{DEFAULT_OPENROUTER_MODEL} (OpenRouter) or {DEFAULT_OLLAMA_MODEL} (with --use-local-embedding)."
-        ),
-    )
-    p_query.add_argument("--use-local-embedding", action="store_true")
+    p_search = sub.add_parser("search", help="Full-text keyword search indexed markdown chunks")
+    _add_search_args(p_search, include_embedding=False)
+    p_search.set_defaults(func=cmd_search)
+
+    p_vsearch = sub.add_parser("vsearch", help="Vector search indexed markdown chunks")
+    _add_search_args(p_vsearch, include_embedding=True)
+    p_vsearch.set_defaults(func=cmd_vsearch)
+
+    p_query = sub.add_parser("query", help="Hybrid search indexed markdown chunks")
+    _add_search_args(p_query, include_embedding=True)
     p_query.set_defaults(func=cmd_query)
 
     p_eval = sub.add_parser("eval", help="Evaluate search quality with golden set")

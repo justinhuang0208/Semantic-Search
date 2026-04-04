@@ -77,7 +77,7 @@ class CollectionIngestTests(unittest.TestCase):
                 embedder=FakeEmbedder(),
             )
 
-            with mock.patch("semsearch.pipeline.resolve_embedder", return_value=runtime):
+            with mock.patch("semsearch.pipeline.resolve_embedder", return_value=runtime) as resolve_embedder_mock:
                 ingest(
                     source=root_a,
                     db_path=db_path,
@@ -122,8 +122,102 @@ class CollectionIngestTests(unittest.TestCase):
                     collections_path=registry_path,
                     collection=collection_a.collection_id,
                 )
+                call_count_after_hybrid = resolve_embedder_mock.call_count
+                fulltext_results = search(
+                    query="banana carrot",
+                    db_path=db_path,
+                    faiss_path=faiss_path,
+                    api_key=None,
+                    model="stub-model",
+                    top_k=5,
+                    collections_path=registry_path,
+                    search_mode="fulltext",
+                )
+                fulltext_filtered_results = search(
+                    query="banana carrot",
+                    db_path=db_path,
+                    faiss_path=faiss_path,
+                    api_key=None,
+                    model="stub-model",
+                    top_k=5,
+                    collections_path=registry_path,
+                    collection=collection_a.collection_id,
+                    search_mode="fulltext",
+                )
 
+            self.assertEqual(resolve_embedder_mock.call_count, call_count_after_hybrid)
             self.assertEqual({item.collection_id for item in all_results}, {collection_a.collection_id, collection_b.collection_id})
+            self.assertEqual({item.collection_id for item in filtered_results}, {collection_a.collection_id})
+            self.assertEqual({item.collection_id for item in fulltext_results}, {collection_a.collection_id, collection_b.collection_id})
+            self.assertEqual({item.collection_id for item in fulltext_filtered_results}, {collection_a.collection_id})
+            self.assertEqual(filtered_results[0].relative_path, "topic.md")
+
+    def test_bm25_query_respects_collection_filter_without_embedding(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            root_a = tmp_path / "A"
+            root_b = tmp_path / "B"
+            root_a.mkdir()
+            root_b.mkdir()
+
+            (root_a / "topic.md").write_text("# Topic\nalpha banana\n", encoding="utf-8")
+            (root_b / "topic.md").write_text("# Topic\nbeta carrot\n", encoding="utf-8")
+
+            registry_path = tmp_path / "collections.yml"
+            registry = CollectionRegistry.load(registry_path)
+            collection_a = registry.add_collection(name="A", root_path=root_a)
+            collection_b = registry.add_collection(name="B", root_path=root_b)
+
+            db_path = tmp_path / "semsearch.db"
+            faiss_path = tmp_path / "semsearch.faiss"
+            runtime = SimpleNamespace(
+                provider="stub",
+                model="stub-model",
+                cache_key="stub::stub-model",
+                embedder=FakeEmbedder(),
+            )
+
+            with mock.patch("semsearch.pipeline.resolve_embedder", return_value=runtime):
+                ingest(
+                    source=root_a,
+                    db_path=db_path,
+                    faiss_path=faiss_path,
+                    api_key=None,
+                    model="stub-model",
+                    rebuild=True,
+                    use_local_embedding=True,
+                    collections_path=registry_path,
+                    collection=collection_a.collection_id,
+                )
+                ingest(
+                    source=root_b,
+                    db_path=db_path,
+                    faiss_path=faiss_path,
+                    api_key=None,
+                    model="stub-model",
+                    rebuild=False,
+                    use_local_embedding=True,
+                    collections_path=registry_path,
+                    collection=collection_b.collection_id,
+                )
+
+            with mock.patch(
+                "semsearch.pipeline.resolve_embedder",
+                side_effect=AssertionError("fulltext search should not call resolve_embedder"),
+            ):
+                filtered_results = search(
+                    query="banana carrot",
+                    db_path=db_path,
+                    faiss_path=faiss_path,
+                    api_key=None,
+                    model="stub-model",
+                    top_k=5,
+                    use_local_embedding=False,
+                    collections_path=registry_path,
+                    collection=collection_a.collection_id,
+                    search_mode="fulltext",
+                )
+
             self.assertEqual({item.collection_id for item in filtered_results}, {collection_a.collection_id})
             self.assertEqual(filtered_results[0].relative_path, "topic.md")
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import yaml
 
@@ -15,6 +16,8 @@ from .storage import Storage
 from .tokenize import count_terms
 from .utils import is_hidden_or_ignored, normalize_query_text
 from .vector_index import VectorIndex, VectorIndexError
+
+SearchMode = Literal["fulltext", "vector", "hybrid"]
 
 
 @dataclass(slots=True)
@@ -305,18 +308,22 @@ def search(
     query: str,
     db_path: Path,
     faiss_path: Path,
-    api_key: str | None,
-    model: str,
-    top_k: int,
+    api_key: str | None = None,
+    model: str | None = None,
+    top_k: int = 8,
     vector_top_k: int = 20,
     bm25_top_k: int = 20,
     use_local_embedding: bool = False,
     collections_path: Path = DEFAULT_COLLECTIONS_PATH,
     collection: str | None = None,
+    search_mode: SearchMode = "hybrid",
 ) -> list[SearchResult]:
     normalized_query = normalize_query_text(query)
     if not normalized_query:
         return []
+
+    if search_mode not in {"hybrid", "fulltext", "vector"}:
+        raise ValueError(f"Unsupported search mode: {search_mode}")
 
     registry = CollectionRegistry.load(collections_path)
     selected_collection_ids = _resolve_query_collections(registry, collection)
@@ -324,51 +331,66 @@ def search(
         item.collection_id: item.name for item in registry.collections
     }
 
-    runtime = resolve_embedder(
-        use_local_embedding=use_local_embedding,
-        model=model,
-        api_key=api_key,
-    )
-
     storage = Storage(db_path)
     try:
         storage.create_schema()
-        _ensure_embedding_profile_matches(
-            storage,
-            provider=runtime.provider,
-            model=runtime.model,
-            cache_key=runtime.cache_key,
-        )
+        runtime = None
+        vector_results: list[tuple[int, float]] = []
+        bm25_results: list[tuple[int, float]] = []
 
-        embedded = runtime.embedder.embed_texts([normalized_query], input_type="query")
-
-        index = VectorIndex(faiss_path)
-        try:
-            vector_results = index.search(embedded.vectors[0], top_k=vector_top_k)
-        except VectorIndexError:
-            ids, vectors = storage.all_chunk_vectors(model=runtime.cache_key)
-            vector_results = index.search_in_memory(
-                embedded.vectors[0],
-                vectors=vectors,
-                ids=ids,
-                top_k=vector_top_k,
+        if search_mode != "fulltext":
+            runtime = resolve_embedder(
+                use_local_embedding=use_local_embedding,
+                model=model,
+                api_key=api_key,
             )
-        if selected_collection_ids is not None:
-            allowed_collection_ids = set(selected_collection_ids)
-            rows = storage.chunks_by_ids([chunk_id for chunk_id, _score in vector_results])
-            vector_results = [
-                (chunk_id, score)
-                for chunk_id, score in vector_results
-                if chunk_id in rows and str(rows[chunk_id]["collection_id"]) in allowed_collection_ids
-            ]
+            _ensure_embedding_profile_matches(
+                storage,
+                provider=runtime.provider,
+                model=runtime.model,
+                cache_key=runtime.cache_key,
+            )
 
-        bm25_results = bm25_search(
-            storage,
-            normalized_query,
-            top_k=bm25_top_k,
-            collection_ids=selected_collection_ids,
-        )
-        fused, vector_rank, bm25_rank = reciprocal_rank_fusion(vector_results, bm25_results, k=60)
+            embedded = runtime.embedder.embed_texts([normalized_query], input_type="query")
+
+            index = VectorIndex(faiss_path)
+            try:
+                vector_results = index.search(embedded.vectors[0], top_k=vector_top_k)
+            except VectorIndexError:
+                ids, vectors = storage.all_chunk_vectors(model=runtime.cache_key)
+                vector_results = index.search_in_memory(
+                    embedded.vectors[0],
+                    vectors=vectors,
+                    ids=ids,
+                    top_k=vector_top_k,
+                )
+            if selected_collection_ids is not None:
+                allowed_collection_ids = set(selected_collection_ids)
+                rows = storage.chunks_by_ids([chunk_id for chunk_id, _score in vector_results])
+                vector_results = [
+                    (chunk_id, score)
+                    for chunk_id, score in vector_results
+                    if chunk_id in rows and str(rows[chunk_id]["collection_id"]) in allowed_collection_ids
+                ]
+
+        if search_mode != "vector":
+            bm25_results = bm25_search(
+                storage,
+                normalized_query,
+                top_k=bm25_top_k,
+                collection_ids=selected_collection_ids,
+            )
+
+        if search_mode == "fulltext":
+            fused = bm25_results
+            vector_rank = {}
+            bm25_rank = {chunk_id: rank for rank, (chunk_id, _score) in enumerate(bm25_results, start=1)}
+        elif search_mode == "vector":
+            fused = vector_results
+            vector_rank = {chunk_id: rank for rank, (chunk_id, _score) in enumerate(vector_results, start=1)}
+            bm25_rank = {}
+        else:
+            fused, vector_rank, bm25_rank = reciprocal_rank_fusion(vector_results, bm25_results, k=60)
         results = rerank_with_doc_diversity(
             storage,
             fused=fused,
@@ -376,6 +398,8 @@ def search(
             bm25_rank=bm25_rank,
             top_k=top_k,
         )
+        if search_mode == "fulltext":
+            results = sorted(results, key=lambda item: item.fusion_score, reverse=True)
         for item in results:
             item.collection_name = collection_name_by_id.get(item.collection_id, item.collection_name)
         return results
@@ -419,6 +443,7 @@ def evaluate(
             bm25_top_k=20,
             collections_path=collections_path,
             collection=collection,
+            search_mode="hybrid",
         )
 
         ranked_docs = [Path(r.relative_path).name for r in results]

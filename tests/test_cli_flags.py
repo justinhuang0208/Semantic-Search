@@ -41,19 +41,27 @@ class CliFlagsTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "OPENROUTER_API_KEY"):
                 _api_key(use_local_embedding=False)
 
-    def test_parser_accepts_use_local_embedding_for_all_commands(self) -> None:
+    def test_parser_routes_embedding_flags_by_command(self) -> None:
         assert build_parser is not None
         parser = build_parser()
 
         args_ingest = parser.parse_args(["ingest", "--use-local-embedding"])
         args_ingest_legacy = parser.parse_args(["ingest", "--source", "legacy"])
+        args_search = parser.parse_args(["search", "hello"])
+        args_vsearch = parser.parse_args(["vsearch", "hello", "--use-local-embedding"])
         args_query = parser.parse_args(["query", "hello", "--use-local-embedding"])
         args_eval = parser.parse_args(["eval", "--use-local-embedding"])
         args_collection = parser.parse_args(["collection", "list"])
         args_context = parser.parse_args(["context", "add", "/", "--text", "hello"])
+        with self.assertRaises(SystemExit):
+            parser.parse_args(["search", "hello", "--use-local-embedding"])
 
         self.assertTrue(args_ingest.use_local_embedding)
         self.assertEqual(args_ingest_legacy.source, "legacy")
+        self.assertEqual(args_search.command, "search")
+        self.assertFalse(hasattr(args_search, "use_local_embedding"))
+        self.assertFalse(hasattr(args_search, "model"))
+        self.assertTrue(args_vsearch.use_local_embedding)
         self.assertTrue(args_query.use_local_embedding)
         self.assertTrue(args_eval.use_local_embedding)
         self.assertEqual(args_collection.command, "collection")
@@ -78,7 +86,7 @@ class CliFlagsTests(unittest.TestCase):
         self.assertEqual(str(db_path), "data_index/notes.db")
         self.assertEqual(str(faiss_path), "data_index/notes.faiss")
 
-    def test_query_outputs_structured_json(self) -> None:
+    def test_search_outputs_structured_json(self) -> None:
         assert build_parser is not None
         parser = build_parser()
         result = SearchResult(
@@ -97,7 +105,47 @@ class CliFlagsTests(unittest.TestCase):
             vector_rank=1,
             bm25_rank=1,
         )
-        args = parser.parse_args(["query", "hello", "--use-local-embedding"])
+        args = parser.parse_args(["search", "hello"])
+
+        with mock.patch("semsearch.cli.search", return_value=[result]):
+            buffer = io.StringIO()
+            with redirect_stdout(buffer):
+                exit_code = args.func(args)
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(
+            json.loads(buffer.getvalue()),
+            [
+                {
+                    "doc_id": "test::new.md",
+                    "score": 0.8765,
+                    "file": "qmd://test/new.md",
+                    "title": "new",
+                    "snippet": "hello world",
+                }
+            ],
+        )
+
+    def test_vsearch_outputs_structured_json(self) -> None:
+        assert build_parser is not None
+        parser = build_parser()
+        result = SearchResult(
+            chunk_rowid=1,
+            chunk_id="test::new.md::text::0",
+            doc_id="test::new.md",
+            collection_id="test",
+            collection_name="test",
+            title="new",
+            source_path="/tmp/test/new.md",
+            relative_path="new.md",
+            section_path="new",
+            chunk_type="text",
+            text="hello world",
+            fusion_score=0.87654,
+            vector_rank=1,
+            bm25_rank=1,
+        )
+        args = parser.parse_args(["vsearch", "hello", "--use-local-embedding"])
 
         with mock.patch("semsearch.cli.search", return_value=[result]):
             buffer = io.StringIO()
@@ -147,6 +195,45 @@ class CliFlagsTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         payload = json.loads(buffer.getvalue())
         self.assertEqual(payload[0]["chunk_type"], "code")
+
+    def test_search_modes_route_to_pipeline(self) -> None:
+        assert build_parser is not None
+        parser = build_parser()
+        result = SearchResult(
+            chunk_rowid=1,
+            chunk_id="test::new.md::text::0",
+            doc_id="test::new.md",
+            collection_id="test",
+            collection_name="test",
+            title="new",
+            source_path="/tmp/test/new.md",
+            relative_path="new.md",
+            section_path="new",
+            chunk_type="text",
+            text="hello world",
+            fusion_score=0.87654,
+            vector_rank=1,
+            bm25_rank=1,
+        )
+
+        cases = [
+            (["search", "hello"], "fulltext", None),
+            (["vsearch", "hello", "--use-local-embedding"], "vector", None),
+            (["query", "hello", "--use-local-embedding"], "hybrid", None),
+        ]
+
+        for argv, expected_mode, expected_api_key in cases:
+            with self.subTest(argv=argv):
+                args = parser.parse_args(argv)
+                with mock.patch("semsearch.cli.search", return_value=[result]) as search_mock:
+                    buffer = io.StringIO()
+                    with redirect_stdout(buffer):
+                        exit_code = args.func(args)
+
+                self.assertEqual(exit_code, 0)
+                search_mock.assert_called_once()
+                self.assertEqual(search_mock.call_args.kwargs["search_mode"], expected_mode)
+                self.assertEqual(search_mock.call_args.kwargs["api_key"], expected_api_key)
 
 
 if __name__ == "__main__":

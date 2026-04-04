@@ -5,7 +5,7 @@
 - Embedding provider: OpenRouter or local Ollama
 - Default model (OpenRouter): `google/gemini-embedding-001`
 - Default model (Ollama): `qwen3-embedding:0.6b`
-- Retrieval: Hybrid (`BM25 + Vector`) + RRF
+- Retrieval: `search` (BM25), `vsearch` (vector), `query` (hybrid: `BM25 + Vector + RRF`)
 - Storage: SQLite + FAISS / numpy fallback
 - Collection registry: collection:// scopes + context scopes
 - Interface: CLI
@@ -106,8 +106,16 @@ semsearch ingest --collection B
 
 ## 6. 查詢
 
+三種模式的用途如下：
+
+- `search`：快速關鍵字 full-text 搜尋，只走 BM25
+- `vsearch`：語意相似度搜尋，只走 vector
+- `query`：最佳品質 hybrid 搜尋，沿用目前 `BM25 + Vector + RRF`
+
 ```bash
-semsearch query "non-blocking assignment 在跨週期傳遞的重點" --top-k 8
+semsearch search "authentication flow" --top-k 8
+semsearch vsearch "how to login" --top-k 8 --use-local-embedding
+semsearch query "user authentication" --top-k 8
 semsearch query "MULH sign extension 高位錯誤" --top-k 8 --show-chunk-type
 semsearch query "non-blocking assignment 在跨週期傳遞的重點" --collection notes --top-k 8
 ```
@@ -115,6 +123,7 @@ semsearch query "non-blocking assignment 在跨週期傳遞的重點" --collecti
 本地 Ollama 模式查詢：
 
 ```bash
+semsearch vsearch "how to login" --use-local-embedding --top-k 8
 semsearch query "non-blocking assignment 在跨週期傳遞的重點" --use-local-embedding --top-k 8
 ```
 
@@ -132,13 +141,13 @@ semsearch eval --golden tests/golden_queries.yaml --use-local-embedding
 - `--model` 可覆寫預設模型：
   - 未加 `--use-local-embedding`：預設 `google/gemini-embedding-001`
   - 加上 `--use-local-embedding`：預設 `qwen3-embedding:0.6b`
-- `ingest/query/eval` 需要使用與索引建立時一致的 provider/model。
+- `ingest/vsearch/query/eval` 需要使用與索引建立時一致的 provider/model。
 - 若設定不一致，系統會報錯並提示先用正確參數重新 `ingest`。
 
 ## 9. 專案結構
 
-- `semsearch/cli.py`: CLI 入口（`ingest`, `query`, `eval`）
-- `semsearch/pipeline.py`: ingest/query/eval 主流程
+- `semsearch/cli.py`: CLI 入口（`ingest`, `search`, `vsearch`, `query`, `eval`）
+- `semsearch/pipeline.py`: ingest/search/vsearch/query/eval 主流程
 - `semsearch/markdown_ingest.py`: Markdown 解析與切塊
 - `semsearch/embeddings.py`: OpenRouter/Ollama embedding client + provider resolver
 - `semsearch/storage.py`: SQLite schema 與資料存取
@@ -160,7 +169,9 @@ semsearch context rm collection://notes/api
 
 - `collection` 用來定義 collection 的根目錄、掃描 mask、以及預設索引路徑。
 - `context` 用來加上 collection-wide 或 path-specific 的額外背景文字。
-- `query` 預設只看 `include-by-default=true` 的 collections；也可以用 `--collection` 指定單一 collection。
+- `search` 預設只看 `include-by-default=true` 的 collections；`vsearch` 和 `query` 也同樣支援 `--collection` 指定單一 collection。
+- `search` 不需要 embedding model 或 `OPENROUTER_API_KEY`。
+- `vsearch` 和 `query` 需要使用與索引建立時一致的 provider/model。
 
 ## 11. Chunk 策略
 
@@ -172,7 +183,8 @@ semsearch context rm collection://notes/api
 
 ## 12. 注意事項
 
-- `query` 與 `eval` 每次都會對查詢文字呼叫一次 embedding API。
+- `search` 不會對查詢文字呼叫 embedding API。
+- `vsearch`、`query` 與 `eval` 每次都會對查詢文字呼叫一次 embedding API。
 - `ingest` 預設是增量更新；`--rebuild` 會重建文件/BM25/FAISS，但會保留 embedding 快取以降低重建成本。
 - 目前預設只讀取 `source/*.md`，不遞迴子目錄。
 - 若使用本地模式，請先確認 Ollama 服務已啟動且模型已下載完成。
