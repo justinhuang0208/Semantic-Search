@@ -7,11 +7,15 @@ import sys
 from dataclasses import dataclass
 from typing import Protocol
 
+import requests
 
-DEFAULT_QWEN_RERANKER_MODEL = "tomaarsen/Qwen3-Reranker-0.6B-seq-cls"
+
+DEFAULT_LOCAL_RERANKER_MODEL = "tomaarsen/Qwen3-Reranker-0.6B-seq-cls"
+DEFAULT_COHERE_RERANKER_MODEL = "rerank-v4.0-fast"
 DEFAULT_RERANKER_INSTRUCTION = (
     "Given a search query, retrieve relevant passages that answer the query."
 )
+COHERE_RERANK_ENDPOINT = "https://api.cohere.com/v2/rerank"
 _SEQ_CLS_PROMPT_PREFIX = (
     '<|im_start|>system\n'
     'Judge whether the Document meets the requirements based on the Query and the Instruct '
@@ -42,7 +46,7 @@ class QwenReranker:
     def __init__(
         self,
         *,
-        model: str = DEFAULT_QWEN_RERANKER_MODEL,
+        model: str = DEFAULT_LOCAL_RERANKER_MODEL,
         device: str = "auto",
         instruction: str = DEFAULT_RERANKER_INSTRUCTION,
         max_length: int = 8192,
@@ -198,16 +202,92 @@ class SubprocessReranker:
         return [float(score) for score in scores]
 
 
+class CohereReranker:
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        model: str = DEFAULT_COHERE_RERANKER_MODEL,
+        endpoint: str = COHERE_RERANK_ENDPOINT,
+        timeout: int = 60,
+        max_tokens_per_doc: int = 4096,
+    ) -> None:
+        if not api_key:
+            raise RerankerError("COHERE_API_KEY is required for Cohere reranker.")
+        self.api_key = api_key
+        self.model_name = model
+        self.endpoint = endpoint
+        self.timeout = timeout
+        self.max_tokens_per_doc = max_tokens_per_doc
+        self.session = requests.Session()
+
+    def score(self, query: str, documents: list[str]) -> list[float]:
+        if not documents:
+            return []
+        response = self.session.post(
+            self.endpoint,
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": self.model_name,
+                "query": query,
+                "documents": documents,
+                "top_n": len(documents),
+                "max_tokens_per_doc": self.max_tokens_per_doc,
+            },
+            timeout=self.timeout,
+        )
+        if response.status_code != 200:
+            raise RerankerError(
+                f"Cohere rerank request failed: HTTP {response.status_code} {response.text}"
+            )
+        payload = response.json()
+        results = payload.get("results")
+        if not isinstance(results, list):
+            raise RerankerError("Cohere rerank response is missing results.")
+        scores = [0.0] * len(documents)
+        for item in results:
+            if not isinstance(item, dict):
+                continue
+            index = item.get("index")
+            relevance_score = item.get("relevance_score")
+            if not isinstance(index, int) or index < 0 or index >= len(documents):
+                continue
+            if not isinstance(relevance_score, (int, float)):
+                continue
+            scores[index] = float(relevance_score)
+        return scores
+
+
 def resolve_reranker(
     *,
     use_reranker: bool,
+    provider: str,
     model: str | None,
     device: str,
+    api_key: str | None = None,
     instruction: str = DEFAULT_RERANKER_INSTRUCTION,
 ) -> RerankerRuntime | None:
     if not use_reranker:
         return None
-    resolved_model = (model or "").strip() or DEFAULT_QWEN_RERANKER_MODEL
+    resolved_provider = provider.strip().lower()
+    resolved_model = (model or "").strip()
+    if resolved_provider == "cohere":
+        reranker = CohereReranker(
+            api_key=api_key or "",
+            model=resolved_model or DEFAULT_COHERE_RERANKER_MODEL,
+        )
+        return RerankerRuntime(
+            provider="cohere",
+            model=reranker.model_name,
+            device="remote",
+            reranker=reranker,
+        )
+    if resolved_provider != "local":
+        raise RerankerError(f"Unsupported reranker provider: {provider}")
+    resolved_model = resolved_model or DEFAULT_LOCAL_RERANKER_MODEL
     if platform.system() == "Darwin":
         reranker = SubprocessReranker(
             model=resolved_model,

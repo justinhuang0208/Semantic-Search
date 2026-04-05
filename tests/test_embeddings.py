@@ -14,7 +14,9 @@ from semsearch.embeddings import (
     resolve_embedder,
 )
 from semsearch.rerankers import (
-    DEFAULT_QWEN_RERANKER_MODEL,
+    CohereReranker,
+    DEFAULT_COHERE_RERANKER_MODEL,
+    DEFAULT_LOCAL_RERANKER_MODEL,
     QwenReranker,
     SubprocessReranker,
     resolve_reranker,
@@ -70,19 +72,20 @@ class EmbeddingsTests(unittest.TestCase):
         with mock.patch("semsearch.rerankers.platform.system", return_value="Darwin"):
             runtime = resolve_reranker(
                 use_reranker=True,
+                provider="local",
                 model=None,
                 device="auto",
             )
 
         self.assertIsNotNone(runtime)
         assert runtime is not None
-        self.assertEqual(runtime.model, DEFAULT_QWEN_RERANKER_MODEL)
+        self.assertEqual(runtime.model, DEFAULT_LOCAL_RERANKER_MODEL)
         self.assertEqual(runtime.provider, "local-transformers-subprocess")
         self.assertIsInstance(runtime.reranker, SubprocessReranker)
 
     def test_subprocess_reranker_parses_scores(self) -> None:
         reranker = SubprocessReranker(
-            model=DEFAULT_QWEN_RERANKER_MODEL,
+            model=DEFAULT_LOCAL_RERANKER_MODEL,
             device="cpu",
             instruction="test",
         )
@@ -92,6 +95,36 @@ class EmbeddingsTests(unittest.TestCase):
 
         self.assertEqual(scores, [0.2, 0.8])
         run_mock.assert_called_once()
+
+    def test_cohere_reranker_maps_scores_back_to_original_order(self) -> None:
+        reranker = CohereReranker(api_key="test-key")
+        response = mock.Mock(status_code=200)
+        response.json.return_value = {
+            "results": [
+                {"index": 1, "relevance_score": 0.9},
+                {"index": 0, "relevance_score": 0.3},
+            ]
+        }
+        with mock.patch.object(reranker.session, "post", return_value=response) as post_mock:
+            scores = reranker.score("query", ["doc-a", "doc-b"])
+
+        self.assertEqual(scores, [0.3, 0.9])
+        post_mock.assert_called_once()
+
+    def test_resolve_reranker_supports_cohere_provider(self) -> None:
+        runtime = resolve_reranker(
+            use_reranker=True,
+            provider="cohere",
+            model=None,
+            device="auto",
+            api_key="test-key",
+        )
+
+        self.assertIsNotNone(runtime)
+        assert runtime is not None
+        self.assertEqual(runtime.provider, "cohere")
+        self.assertEqual(runtime.model, DEFAULT_COHERE_RERANKER_MODEL)
+        self.assertEqual(runtime.device, "remote")
 
     def test_qwen_reranker_seq_cls_formats_chat_prompt(self) -> None:
         reranker = QwenReranker(model="tomaarsen/Qwen3-Reranker-0.6B-seq-cls", device="cpu")

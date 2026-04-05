@@ -10,3 +10,4 @@
 - When the user specifies an existing CLI or executable name, preserve that name and do not introduce a new alias unless explicitly requested.
 - When simplifying config schemas, keep any source-specific path the workflow still truly needs; do not remove required SQLite or storage paths just because db/faiss storage moved elsewhere.
 - When reverting a user-requested config change, update the corresponding script defaults and README text too; otherwise the repo ends up with mismatched sources of truth.
+- When changing a CLI default like `top-k`, update both the parser default and any mirrored function signature defaults so command-line and direct API behavior stay aligned.

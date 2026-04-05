@@ -114,19 +114,19 @@ semsearch ingest --collection B
 - `query`：最佳品質 hybrid 搜尋，沿用目前 `BM25 + Vector + RRF`
 
 ```bash
-semsearch search "authentication flow" --top-k 8
-semsearch vsearch "how to login" --top-k 8 --use-local-embedding
-semsearch query "user authentication" --top-k 8
-semsearch query "MULH sign extension 高位錯誤" --top-k 8 --show-chunk-type
-semsearch query "non-blocking assignment 在跨週期傳遞的重點" --collection notes --top-k 8
+semsearch search "authentication flow" --top-k 20
+semsearch vsearch "how to login" --top-k 20 --use-local-embedding
+semsearch query "user authentication" --top-k 20
+semsearch query "MULH sign extension 高位錯誤" --top-k 20 --show-chunk-type
+semsearch query "non-blocking assignment 在跨週期傳遞的重點" --collection notes --top-k 20
 semsearch query "pipeline hazard" --use-reranker --rerank-top-k 20
 ```
 
 本地 Ollama 模式查詢：
 
 ```bash
-semsearch vsearch "how to login" --use-local-embedding --top-k 8
-semsearch query "non-blocking assignment 在跨週期傳遞的重點" --use-local-embedding --top-k 8
+semsearch vsearch "how to login" --use-local-embedding --top-k 20
+semsearch query "non-blocking assignment 在跨週期傳遞的重點" --use-local-embedding --top-k 20
 ```
 
 本地 Qwen reranker 重排序（Mac 建議）：
@@ -145,6 +145,20 @@ semsearch query "non-blocking assignment 在跨週期傳遞的重點" \
 - 在 Apple Silicon 上，`--reranker-device auto` 會優先使用 MPS，否則 fallback 到 CPU。
 - 第一次啟用 reranker 會下載 Hugging Face 模型，預設模型是 `tomaarsen/Qwen3-Reranker-0.6B-seq-cls`。
 
+使用 Cohere API reranker：
+
+```bash
+export COHERE_API_KEY="<YOUR_COHERE_API_KEY>"
+semsearch query "non-blocking assignment 在跨週期傳遞的重點" \
+  --use-local-embedding \
+  --use-reranker \
+  --reranker-provider cohere
+```
+
+- `--reranker-provider cohere` 會呼叫 Cohere `v2/rerank` API。
+- Cohere provider 的預設模型是 `rerank-v4.0-fast`。
+- 目前只要有開 `--use-reranker` 且 provider 是 `cohere`，就必須設定 `COHERE_API_KEY`。
+
 ## 7. 評估
 
 ```bash
@@ -160,8 +174,12 @@ semsearch eval --golden tests/golden_queries.yaml --use-local-embedding
   - 未加 `--use-local-embedding`：預設 `google/gemini-embedding-001`
   - 加上 `--use-local-embedding`：預設 `qwen3-embedding:0.6b`
 - `--use-reranker` 會在召回後額外執行本地 Qwen reranker 重排。
-- `--reranker-model` 預設為 `tomaarsen/Qwen3-Reranker-0.6B-seq-cls`。
+- `--reranker-provider` 支援 `local`、`cohere`。
+- `--reranker-model` 預設會依 provider 決定：
+  - `local`: `tomaarsen/Qwen3-Reranker-0.6B-seq-cls`
+  - `cohere`: `rerank-v4.0-fast`
 - `--reranker-device` 支援 `auto`、`mps`、`cpu`；Mac 建議使用 `auto`。
+- `COHERE_API_KEY` 只在 `--reranker-provider cohere` 時需要。
 - `ingest/vsearch/query/eval` 需要使用與索引建立時一致的 provider/model。
 - 若設定不一致，系統會報錯並提示先用正確參數重新 `ingest`。
 

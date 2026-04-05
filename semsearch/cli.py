@@ -9,13 +9,14 @@ from .collections import DEFAULT_COLLECTIONS_PATH, CollectionRegistry, default_i
 from .embeddings import DEFAULT_OLLAMA_MODEL, DEFAULT_OPENROUTER_MODEL
 from .models import SearchResult
 from .pipeline import evaluate, ingest, search
-from .rerankers import DEFAULT_QWEN_RERANKER_MODEL
+from .rerankers import DEFAULT_COHERE_RERANKER_MODEL, DEFAULT_LOCAL_RERANKER_MODEL
 
 DEFAULT_SOURCE = Path("1 - Cards")
 DEFAULT_DB_PATH = Path("data_index/semsearch.db")
 DEFAULT_FAISS_PATH = Path("data_index/semsearch.faiss")
 SOURCE_ENV_VAR = "SEMSEARCH_SOURCE"
 COLLECTIONS_ENV_VAR = "SEMSEARCH_COLLECTIONS"
+COHERE_API_KEY_ENV_VAR = "COHERE_API_KEY"
 
 
 def _resolve_model(model: str | None, use_local_embedding: bool) -> str:
@@ -32,6 +33,15 @@ def _api_key(use_local_embedding: bool) -> str | None:
     api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("OPENROUTER_API_KEY is not set.")
+    return api_key
+
+
+def _reranker_api_key(use_reranker: bool, provider: str) -> str | None:
+    if not use_reranker or provider != "cohere":
+        return None
+    api_key = os.getenv(COHERE_API_KEY_ENV_VAR, "").strip()
+    if not api_key:
+        raise RuntimeError("COHERE_API_KEY is not set.")
     return api_key
 
 
@@ -95,7 +105,7 @@ def _add_search_args(
     include_reranker: bool = False,
 ) -> None:
     parser.add_argument("query")
-    parser.add_argument("--top-k", type=int, default=8)
+    parser.add_argument("--top-k", type=int, default=20)
     parser.add_argument("--show-chunk-type", action="store_true")
     parser.add_argument("--db-path", default=argparse.SUPPRESS)
     parser.add_argument("--faiss-path", default=argparse.SUPPRESS)
@@ -119,14 +129,24 @@ def _add_search_args(
         parser.add_argument("--use-local-embedding", action="store_true")
     if include_reranker:
         parser.add_argument(
+            "--reranker-provider",
+            choices=["local", "cohere"],
+            default="local",
+            help="Reranker provider. Use local for Transformers or cohere for API rerank.",
+        )
+        parser.add_argument(
             "--use-reranker",
             action="store_true",
-            help="Rerank top candidates locally with Qwen3 reranker.",
+            help="Rerank top candidates with the selected reranker provider.",
         )
         parser.add_argument(
             "--reranker-model",
-            default=DEFAULT_QWEN_RERANKER_MODEL,
-            help=f"Local reranker model (default: {DEFAULT_QWEN_RERANKER_MODEL}).",
+            default=None,
+            help=(
+                "Reranker model. Defaults to "
+                f"{DEFAULT_LOCAL_RERANKER_MODEL} for local or "
+                f"{DEFAULT_COHERE_RERANKER_MODEL} for cohere."
+            ),
         )
         parser.add_argument(
             "--rerank-top-k",
@@ -166,6 +186,11 @@ def _run_search_command(args: argparse.Namespace, *, search_mode: str) -> int:
         top_k=args.top_k,
         use_reranker=getattr(args, "use_reranker", False),
         reranker_model=getattr(args, "reranker_model", None),
+        reranker_provider=getattr(args, "reranker_provider", "local"),
+        reranker_api_key=_reranker_api_key(
+            getattr(args, "use_reranker", False),
+            getattr(args, "reranker_provider", "local"),
+        ),
         rerank_top_k=getattr(args, "rerank_top_k", 20),
         reranker_device=getattr(args, "reranker_device", "auto"),
         collections_path=Path(args.collections_path),

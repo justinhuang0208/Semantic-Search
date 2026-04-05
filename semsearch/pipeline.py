@@ -311,12 +311,14 @@ def search(
     faiss_path: Path,
     api_key: str | None = None,
     model: str | None = None,
-    top_k: int = 8,
+    top_k: int = 20,
     vector_top_k: int = 20,
     bm25_top_k: int = 20,
     use_local_embedding: bool = False,
     use_reranker: bool = False,
+    reranker_provider: str = "local",
     reranker_model: str | None = None,
+    reranker_api_key: str | None = None,
     rerank_top_k: int = 20,
     reranker_device: str = "auto",
     collections_path: Path = DEFAULT_COLLECTIONS_PATH,
@@ -400,8 +402,10 @@ def search(
         if use_reranker and fused:
             reranker_runtime = resolve_reranker(
                 use_reranker=True,
+                provider=reranker_provider,
                 model=reranker_model,
                 device=reranker_device,
+                api_key=reranker_api_key,
             )
             if reranker_runtime is not None:
                 rerank_limit = max(1, min(rerank_top_k, len(fused)))

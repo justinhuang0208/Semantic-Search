@@ -54,9 +54,11 @@ class CliFlagsTests(unittest.TestCase):
                 "query",
                 "hello",
                 "--use-local-embedding",
+                "--reranker-provider",
+                "cohere",
                 "--use-reranker",
                 "--reranker-model",
-                "tomaarsen/Qwen3-Reranker-0.6B-seq-cls",
+                "rerank-v4.0-fast",
                 "--rerank-top-k",
                 "12",
                 "--reranker-device",
@@ -72,12 +74,16 @@ class CliFlagsTests(unittest.TestCase):
         self.assertTrue(args_ingest.use_local_embedding)
         self.assertEqual(args_ingest_legacy.source, "legacy")
         self.assertEqual(args_search.command, "search")
+        self.assertEqual(args_search.top_k, 20)
         self.assertFalse(hasattr(args_search, "use_local_embedding"))
         self.assertFalse(hasattr(args_search, "model"))
         self.assertTrue(args_vsearch.use_local_embedding)
+        self.assertEqual(args_vsearch.top_k, 20)
         self.assertTrue(args_query.use_local_embedding)
         self.assertTrue(args_query.use_reranker)
-        self.assertEqual(args_query.reranker_model, "tomaarsen/Qwen3-Reranker-0.6B-seq-cls")
+        self.assertEqual(args_query.top_k, 20)
+        self.assertEqual(args_query.reranker_provider, "cohere")
+        self.assertEqual(args_query.reranker_model, "rerank-v4.0-fast")
         self.assertEqual(args_query.rerank_top_k, 12)
         self.assertEqual(args_query.reranker_device, "cpu")
         self.assertTrue(args_eval.use_local_embedding)
@@ -268,9 +274,11 @@ class CliFlagsTests(unittest.TestCase):
                 "query",
                 "hello",
                 "--use-local-embedding",
+                "--reranker-provider",
+                "cohere",
                 "--use-reranker",
                 "--reranker-model",
-                "tomaarsen/Qwen3-Reranker-0.6B-seq-cls",
+                "rerank-v4.0-fast",
                 "--rerank-top-k",
                 "16",
                 "--reranker-device",
@@ -279,15 +287,18 @@ class CliFlagsTests(unittest.TestCase):
         )
 
         with mock.patch("semsearch.cli.search", return_value=[]) as search_mock:
-            buffer = io.StringIO()
-            with redirect_stdout(buffer):
-                exit_code = args.func(args)
+            with mock.patch.dict("os.environ", {"COHERE_API_KEY": "test-key"}, clear=True):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    exit_code = args.func(args)
 
         self.assertEqual(exit_code, 0)
         search_mock.assert_called_once()
         kwargs = search_mock.call_args.kwargs
         self.assertTrue(kwargs["use_reranker"])
-        self.assertEqual(kwargs["reranker_model"], "tomaarsen/Qwen3-Reranker-0.6B-seq-cls")
+        self.assertEqual(kwargs["reranker_provider"], "cohere")
+        self.assertEqual(kwargs["reranker_model"], "rerank-v4.0-fast")
+        self.assertEqual(kwargs["reranker_api_key"], "test-key")
         self.assertEqual(kwargs["rerank_top_k"], 16)
         self.assertEqual(kwargs["reranker_device"], "mps")
 
