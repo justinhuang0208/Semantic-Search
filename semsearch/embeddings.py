@@ -30,7 +30,9 @@ class EmbeddingRuntime:
 
 
 class Embedder(Protocol):
-    def embed_texts(self, texts: list[str], input_type: str | None) -> EmbeddingResponse:
+    def embed_texts(
+        self, texts: list[str], input_type: str | None
+    ) -> EmbeddingResponse:
         pass
 
 
@@ -93,7 +95,9 @@ class OpenRouterEmbedder:
         for item in items_sorted:
             emb = item.get("embedding")
             if not isinstance(emb, list) or not emb:
-                raise EmbeddingError("Invalid embedding response: empty embedding vector.")
+                raise EmbeddingError(
+                    "Invalid embedding response: empty embedding vector."
+                )
             vec = np.asarray(emb, dtype=np.float32)
             norm = np.linalg.norm(vec)
             if norm > 0:
@@ -101,7 +105,9 @@ class OpenRouterEmbedder:
             vectors.append(vec)
         return vectors
 
-    def _embed_batch(self, texts: list[str], input_type: str | None) -> list[np.ndarray]:
+    def _embed_batch(
+        self, texts: list[str], input_type: str | None
+    ) -> list[np.ndarray]:
         payload = {
             "model": self.model,
             "input": texts,
@@ -124,7 +130,9 @@ class OpenRouterEmbedder:
                 return self._parse_vectors(data)
             raise
 
-    def embed_texts(self, texts: list[str], input_type: str | None) -> EmbeddingResponse:
+    def embed_texts(
+        self, texts: list[str], input_type: str | None
+    ) -> EmbeddingResponse:
         if not texts:
             return EmbeddingResponse(vectors=[], dim=0)
 
@@ -196,7 +204,11 @@ class OllamaEmbedder:
 
     def _parse_vectors(self, data: dict) -> list[np.ndarray]:
         raw_vectors = data.get("embeddings")
-        if isinstance(raw_vectors, list) and raw_vectors and isinstance(raw_vectors[0], (int, float)):
+        if (
+            isinstance(raw_vectors, list)
+            and raw_vectors
+            and isinstance(raw_vectors[0], (int, float))
+        ):
             raw_vectors = [raw_vectors]
 
         if not isinstance(raw_vectors, list) or not raw_vectors:
@@ -204,12 +216,16 @@ class OllamaEmbedder:
             if isinstance(single, list) and single:
                 raw_vectors = [single]
             else:
-                raise EmbeddingError("Invalid Ollama embedding response: missing embeddings.")
+                raise EmbeddingError(
+                    "Invalid Ollama embedding response: missing embeddings."
+                )
 
         vectors: list[np.ndarray] = []
         for emb in raw_vectors:
             if not isinstance(emb, list) or not emb:
-                raise EmbeddingError("Invalid Ollama embedding response: empty embedding vector.")
+                raise EmbeddingError(
+                    "Invalid Ollama embedding response: empty embedding vector."
+                )
             vec = np.asarray(emb, dtype=np.float32)
             norm = np.linalg.norm(vec)
             if norm > 0:
@@ -225,7 +241,9 @@ class OllamaEmbedder:
         data = self._post(payload)
         return self._parse_vectors(data)
 
-    def embed_texts(self, texts: list[str], input_type: str | None) -> EmbeddingResponse:
+    def embed_texts(
+        self, texts: list[str], input_type: str | None
+    ) -> EmbeddingResponse:
         del input_type
         if not texts:
             return EmbeddingResponse(vectors=[], dim=0)

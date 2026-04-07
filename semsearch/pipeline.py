@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
@@ -19,6 +20,7 @@ from .utils import is_hidden_or_ignored, normalize_query_text
 from .vector_index import VectorIndex, VectorIndexError
 
 SearchMode = Literal["fulltext", "vector", "hybrid"]
+LAST_INGESTED_AT_KEY_PREFIX = "collection_last_ingested_at"
 
 
 @dataclass(slots=True)
@@ -134,6 +136,10 @@ def _resolve_query_collections(
     if not registry.collections:
         return None
     return [item.collection_id for item in registry.default_collections()]
+
+
+def last_ingested_at_metadata_key(collection_id: str) -> str:
+    return f"{LAST_INGESTED_AT_KEY_PREFIX}:{collection_id}"
 
 
 def ingest(
@@ -277,6 +283,10 @@ def ingest(
         model=runtime.model,
         cache_key=cache_key,
         dim=len(vectors[0]),
+    )
+    storage.set_metadata(
+        last_ingested_at_metadata_key(collection_cfg.collection_id),
+        datetime.now().astimezone().isoformat(timespec="seconds"),
     )
     storage.commit()
 

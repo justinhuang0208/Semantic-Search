@@ -185,8 +185,8 @@ semsearch eval --golden tests/golden_queries.yaml --use-local-embedding
 
 ## 9. 專案結構
 
-- `semsearch/cli.py`: CLI 入口（`ingest`, `search`, `vsearch`, `query`, `eval`）
-- `semsearch/pipeline.py`: ingest/search/vsearch/query/eval 主流程
+- `semsearch/cli.py`: CLI 入口（`ingest`, `search`, `vsearch`, `query`, `eval`, `status`）
+- `semsearch/pipeline.py`: ingest/search/vsearch/query/eval/status 主流程與 helper
 - `semsearch/markdown_ingest.py`: Markdown 解析與切塊
 - `semsearch/embeddings.py`: OpenRouter/Ollama embedding client + provider resolver
 - `semsearch/rerankers.py`: local Qwen reranker client + device/model resolver
@@ -201,6 +201,7 @@ semsearch eval --golden tests/golden_queries.yaml --use-local-embedding
 ```bash
 semsearch collection add notes "1 - Cards"
 semsearch collection list
+semsearch status
 semsearch context add collection://notes "這個 collection 是硬體筆記"
 semsearch context add collection://notes/api "API 相關內容要優先看規格"
 semsearch context list notes
@@ -208,6 +209,7 @@ semsearch context rm collection://notes/api
 ```
 
 - `collection` 用來定義 collection 的根目錄、掃描 mask、以及預設索引路徑。
+- `status` 會列出每個 collection 目前已嵌入的檔案數、chunk 數，以及上次完成 ingest 的時間；舊索引若沒有 metadata，會退回顯示 SQLite 檔案最後寫入時間。
 - `context` 用來加上 collection-wide 或 path-specific 的額外背景文字。
 - `search` 預設只看 `include-by-default=true` 的 collections；`vsearch` 和 `query` 也同樣支援 `--collection` 指定單一 collection。
 - `search` 不需要 embedding model 或 `OPENROUTER_API_KEY`。

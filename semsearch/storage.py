@@ -109,6 +109,11 @@ class Storage:
                 cache_key TEXT NOT NULL,
                 dim INTEGER NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS index_metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
             """
         )
         self.conn.commit()
@@ -215,6 +220,17 @@ class Storage:
     def counts(self) -> tuple[int, int]:
         doc_count = self.conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
         chunk_count = self.conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+        return int(doc_count), int(chunk_count)
+
+    def collection_counts(self, collection_id: str) -> tuple[int, int]:
+        doc_count = self.conn.execute(
+            "SELECT COUNT(*) FROM documents WHERE collection_id = ?",
+            (collection_id,),
+        ).fetchone()[0]
+        chunk_count = self.conn.execute(
+            "SELECT COUNT(*) FROM chunks WHERE collection_id = ?",
+            (collection_id,),
+        ).fetchone()[0]
         return int(doc_count), int(chunk_count)
 
     def document_hashes(self, collection_id: str | None = None) -> dict[str, str]:
@@ -424,3 +440,25 @@ class Storage:
             "cache_key": str(row["cache_key"]),
             "dim": int(row["dim"]),
         }
+
+    def set_metadata(self, key: str, value: str) -> None:
+        self.conn.execute(
+            """
+            INSERT OR REPLACE INTO index_metadata (key, value)
+            VALUES (?, ?)
+            """,
+            (key, value),
+        )
+
+    def metadata_value(self, key: str) -> str | None:
+        row = self.conn.execute(
+            """
+            SELECT value
+            FROM index_metadata
+            WHERE key = ?
+            """,
+            (key,),
+        ).fetchone()
+        if row is None:
+            return None
+        return str(row["value"])

@@ -20,6 +20,77 @@ except ModuleNotFoundError:
 
 
 class StorageAndIndexTests(unittest.TestCase):
+    def test_collection_counts_and_metadata_roundtrip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "semsearch.db"
+            storage = Storage(db_path)
+            storage.create_schema()
+            storage.conn.execute(
+                """
+                INSERT INTO documents
+                (doc_id, collection_id, collection_name, title, source_path, relative_path,
+                 tags_json, out_links_json, updated_at, source_hash, context_hash, document_hash, char_count)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "doc-1",
+                    "notes",
+                    "notes",
+                    "Doc",
+                    "/tmp/notes/doc.md",
+                    "doc.md",
+                    "[]",
+                    "[]",
+                    "2026-04-06T12:00:00+08:00",
+                    "source-hash",
+                    "context-hash",
+                    "document-hash",
+                    10,
+                ),
+            )
+            storage.conn.execute(
+                """
+                INSERT INTO chunks
+                (chunk_id, doc_id, collection_id, collection_name, title, source_path, relative_path,
+                 section_path, chunk_type, context_prefix, context_text, text, search_text, token_count,
+                 embedding_hash, tags_json, out_links_json, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "chunk-1",
+                    "doc-1",
+                    "notes",
+                    "notes",
+                    "Doc",
+                    "/tmp/notes/doc.md",
+                    "doc.md",
+                    "Doc",
+                    "text",
+                    "",
+                    "",
+                    "hello",
+                    "hello",
+                    1,
+                    "embed-1",
+                    "[]",
+                    "[]",
+                    "2026-04-06T12:00:00+08:00",
+                ),
+            )
+            storage.set_metadata(
+                "collection_last_ingested_at:notes",
+                "2026-04-06T12:34:56+08:00",
+            )
+            storage.commit()
+
+            doc_count, chunk_count = storage.collection_counts("notes")
+            metadata_value = storage.metadata_value("collection_last_ingested_at:notes")
+            storage.close()
+
+        self.assertEqual(doc_count, 1)
+        self.assertEqual(chunk_count, 1)
+        self.assertEqual(metadata_value, "2026-04-06T12:34:56+08:00")
+
     def test_embedding_profile_roundtrip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "semsearch.db"

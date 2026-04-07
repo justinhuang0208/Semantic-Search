@@ -2,23 +2,37 @@ from __future__ import annotations
 
 import io
 import json
+import tempfile
 import unittest
 from contextlib import redirect_stdout
+from pathlib import Path
 from unittest import mock
 
 from semsearch.embeddings import DEFAULT_OLLAMA_MODEL, DEFAULT_OPENROUTER_MODEL
 from semsearch.models import SearchResult
+from semsearch.collections import CollectionRegistry
 
 try:
-    from semsearch.cli import _api_key, _resolve_index_paths, _resolve_model, build_parser
+    from semsearch.cli import (
+        _api_key,
+        _resolve_index_paths,
+        _resolve_model,
+        _write_status_output,
+        build_parser,
+    )
     from semsearch.collections import CollectionConfig
+    from semsearch.pipeline import last_ingested_at_metadata_key
+    from semsearch.storage import Storage
 
     CLI_IMPORTABLE = True
 except ModuleNotFoundError:
     _api_key = None  # type: ignore[assignment]
     _resolve_index_paths = None  # type: ignore[assignment]
     _resolve_model = None  # type: ignore[assignment]
+    _write_status_output = None  # type: ignore[assignment]
     CollectionConfig = None  # type: ignore[assignment]
+    Storage = None  # type: ignore[assignment]
+    last_ingested_at_metadata_key = None  # type: ignore[assignment]
     build_parser = None  # type: ignore[assignment]
     CLI_IMPORTABLE = False
 
@@ -68,6 +82,7 @@ class CliFlagsTests(unittest.TestCase):
         args_eval = parser.parse_args(["eval", "--use-local-embedding"])
         args_collection = parser.parse_args(["collection", "list"])
         args_context = parser.parse_args(["context", "add", "/", "--text", "hello"])
+        args_status = parser.parse_args(["status"])
         with self.assertRaises(SystemExit):
             parser.parse_args(["search", "hello", "--use-local-embedding"])
 
@@ -89,6 +104,7 @@ class CliFlagsTests(unittest.TestCase):
         self.assertTrue(args_eval.use_local_embedding)
         self.assertEqual(args_collection.command, "collection")
         self.assertEqual(args_context.command, "context")
+        self.assertEqual(args_status.command, "status")
 
     def test_index_paths_default_to_collection_paths(self) -> None:
         assert _resolve_index_paths is not None
@@ -301,6 +317,130 @@ class CliFlagsTests(unittest.TestCase):
         self.assertEqual(kwargs["reranker_api_key"], "test-key")
         self.assertEqual(kwargs["rerank_top_k"], 16)
         self.assertEqual(kwargs["reranker_device"], "mps")
+
+    def test_status_outputs_collection_counts_and_last_ingested_time(self) -> None:
+        assert _write_status_output is not None
+        assert Storage is not None
+        assert last_ingested_at_metadata_key is not None
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            registry_path = tmp_path / "collections.yml"
+
+            notes_db = tmp_path / "notes.db"
+            archive_db = tmp_path / "archive.db"
+
+            notes_storage = Storage(notes_db)
+            notes_storage.create_schema()
+            notes_storage.conn.execute(
+                """
+                INSERT INTO documents
+                (doc_id, collection_id, collection_name, title, source_path, relative_path,
+                 tags_json, out_links_json, updated_at, source_hash, context_hash, document_hash, char_count)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "doc-1",
+                    "notes-id",
+                    "notes",
+                    "Doc 1",
+                    "/tmp/notes/doc-1.md",
+                    "doc-1.md",
+                    "[]",
+                    "[]",
+                    "2026-04-06T09:00:00+08:00",
+                    "source-1",
+                    "context-1",
+                    "document-1",
+                    10,
+                ),
+            )
+            notes_storage.conn.executemany(
+                """
+                INSERT INTO chunks
+                (chunk_id, doc_id, collection_id, collection_name, title, source_path, relative_path,
+                 section_path, chunk_type, context_prefix, context_text, text, search_text, token_count,
+                 embedding_hash, tags_json, out_links_json, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        "chunk-1",
+                        "doc-1",
+                        "notes-id",
+                        "notes",
+                        "Doc 1",
+                        "/tmp/notes/doc-1.md",
+                        "doc-1.md",
+                        "Doc 1",
+                        "text",
+                        "",
+                        "",
+                        "hello",
+                        "hello",
+                        1,
+                        "embed-1",
+                        "[]",
+                        "[]",
+                        "2026-04-06T09:00:00+08:00",
+                    ),
+                    (
+                        "chunk-2",
+                        "doc-1",
+                        "notes-id",
+                        "notes",
+                        "Doc 1",
+                        "/tmp/notes/doc-1.md",
+                        "doc-1.md",
+                        "Doc 1",
+                        "text",
+                        "",
+                        "",
+                        "world",
+                        "world",
+                        1,
+                        "embed-2",
+                        "[]",
+                        "[]",
+                        "2026-04-06T09:00:00+08:00",
+                    ),
+                ],
+            )
+            notes_storage.set_metadata(
+                last_ingested_at_metadata_key("notes-id"),
+                "2026-04-06T10:11:12+08:00",
+            )
+            notes_storage.commit()
+            notes_storage.close()
+
+            collection_registry = CollectionRegistry.load(registry_path)
+            notes_collection = collection_registry.add_collection(
+                name="notes",
+                root_path=tmp_path / "notes",
+                db_path=notes_db,
+                faiss_path=tmp_path / "notes.faiss",
+            )
+            notes_collection.collection_id = "notes-id"
+            archive_collection = collection_registry.add_collection(
+                name="archive",
+                root_path=tmp_path / "archive",
+                db_path=archive_db,
+                faiss_path=tmp_path / "archive.faiss",
+            )
+            archive_collection.collection_id = "archive-id"
+            collection_registry.save()
+
+            args = mock.Mock()
+            args.collections_path = str(registry_path)
+            buffer = io.StringIO()
+
+            exit_code = _write_status_output(args, buffer)
+
+        self.assertEqual(exit_code, 0)
+        output = buffer.getvalue()
+        self.assertIn("Total: collections=2 embedded_files=1 chunks=2", output)
+        self.assertIn("- notes (notes-id) embedded_files=1 chunks=2 last_ingested_at=2026-04-06T10:11:12+08:00", output)
+        self.assertIn("- archive (archive-id) embedded_files=0 chunks=0 last_ingested_at=-", output)
 
 
 if __name__ == "__main__":

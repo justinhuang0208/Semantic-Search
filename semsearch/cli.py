@@ -3,13 +3,17 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import TextIO
 
 from .collections import DEFAULT_COLLECTIONS_PATH, CollectionRegistry, default_index_paths
 from .embeddings import DEFAULT_OLLAMA_MODEL, DEFAULT_OPENROUTER_MODEL
 from .models import SearchResult
-from .pipeline import evaluate, ingest, search
+from .pipeline import evaluate, ingest, last_ingested_at_metadata_key, search
 from .rerankers import DEFAULT_COHERE_RERANKER_MODEL, DEFAULT_LOCAL_RERANKER_MODEL
+from .storage import Storage
 
 DEFAULT_SOURCE = Path("1 - Cards")
 DEFAULT_DB_PATH = Path("data_index/semsearch.db")
@@ -433,6 +437,88 @@ def cmd_context_rm(args: argparse.Namespace) -> int:
     return 0
 
 
+def _format_status_time(value: str | None) -> str:
+    if value and value.strip():
+        return value
+    return "-"
+
+
+def _fallback_db_mtime(db_path: Path) -> str | None:
+    if not db_path.exists():
+        return None
+    return datetime.fromtimestamp(db_path.stat().st_mtime, tz=timezone.utc).astimezone().isoformat(
+        timespec="seconds"
+    )
+
+
+def _write_status_output(args: argparse.Namespace, out: TextIO) -> int:
+    registry = _load_registry(args.collections_path)
+    if not registry.collections:
+        print("No collections.", file=out)
+        return 0
+
+    storage_by_db_path: dict[Path, Storage] = {}
+    try:
+        rows: list[dict[str, object]] = []
+        total_documents = 0
+        total_chunks = 0
+
+        for collection in registry.list_collections():
+            db_path, _faiss_path = collection.index_paths()
+            storage = None
+            documents = 0
+            chunks = 0
+            last_ingested_at = None
+
+            if db_path.exists():
+                storage = storage_by_db_path.get(db_path)
+                if storage is None:
+                    storage = Storage(db_path)
+                    storage.create_schema()
+                    storage_by_db_path[db_path] = storage
+                documents, chunks = storage.collection_counts(collection.collection_id)
+                last_ingested_at = storage.metadata_value(
+                    last_ingested_at_metadata_key(collection.collection_id)
+                )
+            if last_ingested_at is None:
+                last_ingested_at = _fallback_db_mtime(db_path)
+
+            total_documents += documents
+            total_chunks += chunks
+            rows.append(
+                {
+                    "name": collection.name,
+                    "collection_id": collection.collection_id,
+                    "documents": documents,
+                    "chunks": chunks,
+                    "last_ingested_at": last_ingested_at,
+                }
+            )
+
+        print(
+            f"Total: collections={len(rows)} embedded_files={total_documents} chunks={total_chunks}",
+            file=out,
+        )
+        for row in rows:
+            print(
+                (
+                    f"- {row['name']} ({row['collection_id']}) "
+                    f"embedded_files={row['documents']} "
+                    f"chunks={row['chunks']} "
+                    f"last_ingested_at={_format_status_time(row['last_ingested_at'])}"
+                ),
+                file=out,
+            )
+        return 0
+    finally:
+        for storage in storage_by_db_path.values():
+            storage.close()
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    return _write_status_output(args, out=sys.stdout)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="semsearch", description="Semantic search for markdown cards")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -559,6 +645,10 @@ def build_parser() -> argparse.ArgumentParser:
     _add_collections_path_arg(p_context_rm)
     p_context_rm.add_argument("target", help='Use the same target syntax as context add')
     p_context_rm.set_defaults(func=cmd_context_rm)
+
+    p_status = sub.add_parser("status", help="Show collection ingest counts and last update time")
+    _add_collections_path_arg(p_status)
+    p_status.set_defaults(func=cmd_status)
 
     return parser
 
