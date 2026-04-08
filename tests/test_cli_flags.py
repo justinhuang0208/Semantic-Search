@@ -15,6 +15,7 @@ from semsearch.collections import CollectionRegistry
 try:
     from semsearch.cli import (
         _api_key,
+        _reranker_api_key,
         _resolve_index_paths,
         _resolve_model,
         _write_status_output,
@@ -27,6 +28,7 @@ try:
     CLI_IMPORTABLE = True
 except ModuleNotFoundError:
     _api_key = None  # type: ignore[assignment]
+    _reranker_api_key = None  # type: ignore[assignment]
     _resolve_index_paths = None  # type: ignore[assignment]
     _resolve_model = None  # type: ignore[assignment]
     _write_status_output = None  # type: ignore[assignment]
@@ -55,6 +57,12 @@ class CliFlagsTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "OPENROUTER_API_KEY"):
                 _api_key(use_local_embedding=False)
 
+    def test_reranker_api_key_required_for_openrouter_provider(self) -> None:
+        assert _reranker_api_key is not None
+        with mock.patch.dict("os.environ", {}, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "OPENROUTER_API_KEY"):
+                _reranker_api_key(use_reranker=True, provider="openrouter")
+
     def test_parser_routes_embedding_flags_by_command(self) -> None:
         assert build_parser is not None
         parser = build_parser()
@@ -69,10 +77,10 @@ class CliFlagsTests(unittest.TestCase):
                 "hello",
                 "--use-local-embedding",
                 "--reranker-provider",
-                "cohere",
+                "openrouter",
                 "--use-reranker",
                 "--reranker-model",
-                "rerank-v4.0-fast",
+                "cohere/rerank-v3.5",
                 "--rerank-top-k",
                 "12",
                 "--reranker-device",
@@ -97,8 +105,8 @@ class CliFlagsTests(unittest.TestCase):
         self.assertTrue(args_query.use_local_embedding)
         self.assertTrue(args_query.use_reranker)
         self.assertEqual(args_query.top_k, 20)
-        self.assertEqual(args_query.reranker_provider, "cohere")
-        self.assertEqual(args_query.reranker_model, "rerank-v4.0-fast")
+        self.assertEqual(args_query.reranker_provider, "openrouter")
+        self.assertEqual(args_query.reranker_model, "cohere/rerank-v3.5")
         self.assertEqual(args_query.rerank_top_k, 12)
         self.assertEqual(args_query.reranker_device, "cpu")
         self.assertTrue(args_eval.use_local_embedding)
@@ -291,10 +299,10 @@ class CliFlagsTests(unittest.TestCase):
                 "hello",
                 "--use-local-embedding",
                 "--reranker-provider",
-                "cohere",
+                "openrouter",
                 "--use-reranker",
                 "--reranker-model",
-                "rerank-v4.0-fast",
+                "cohere/rerank-v3.5",
                 "--rerank-top-k",
                 "16",
                 "--reranker-device",
@@ -303,7 +311,7 @@ class CliFlagsTests(unittest.TestCase):
         )
 
         with mock.patch("semsearch.cli.search", return_value=[]) as search_mock:
-            with mock.patch.dict("os.environ", {"COHERE_API_KEY": "test-key"}, clear=True):
+            with mock.patch.dict("os.environ", {"OPENROUTER_API_KEY": "test-key"}, clear=True):
                 buffer = io.StringIO()
                 with redirect_stdout(buffer):
                     exit_code = args.func(args)
@@ -312,8 +320,8 @@ class CliFlagsTests(unittest.TestCase):
         search_mock.assert_called_once()
         kwargs = search_mock.call_args.kwargs
         self.assertTrue(kwargs["use_reranker"])
-        self.assertEqual(kwargs["reranker_provider"], "cohere")
-        self.assertEqual(kwargs["reranker_model"], "rerank-v4.0-fast")
+        self.assertEqual(kwargs["reranker_provider"], "openrouter")
+        self.assertEqual(kwargs["reranker_model"], "cohere/rerank-v3.5")
         self.assertEqual(kwargs["reranker_api_key"], "test-key")
         self.assertEqual(kwargs["rerank_top_k"], 16)
         self.assertEqual(kwargs["reranker_device"], "mps")

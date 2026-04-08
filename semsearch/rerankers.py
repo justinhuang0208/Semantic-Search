@@ -12,10 +12,12 @@ import requests
 
 DEFAULT_LOCAL_RERANKER_MODEL = "tomaarsen/Qwen3-Reranker-0.6B-seq-cls"
 DEFAULT_COHERE_RERANKER_MODEL = "rerank-v4.0-fast"
+DEFAULT_OPENROUTER_RERANKER_MODEL = "cohere/rerank-v3.5"
 DEFAULT_RERANKER_INSTRUCTION = (
     "Given a search query, retrieve relevant passages that answer the query."
 )
 COHERE_RERANK_ENDPOINT = "https://api.cohere.com/v2/rerank"
+OPENROUTER_RERANK_ENDPOINT = "https://openrouter.ai/api/v1/rerank"
 _SEQ_CLS_PROMPT_PREFIX = (
     '<|im_start|>system\n'
     'Judge whether the Document meets the requirements based on the Query and the Instruct '
@@ -261,6 +263,65 @@ class CohereReranker:
         return scores
 
 
+class OpenRouterReranker:
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        model: str = DEFAULT_OPENROUTER_RERANKER_MODEL,
+        endpoint: str = OPENROUTER_RERANK_ENDPOINT,
+        timeout: int = 60,
+        max_tokens_per_doc: int = 4096,
+    ) -> None:
+        if not api_key:
+            raise RerankerError("OPENROUTER_API_KEY is required for OpenRouter reranker.")
+        self.api_key = api_key
+        self.model_name = model
+        self.endpoint = endpoint
+        self.timeout = timeout
+        self.max_tokens_per_doc = max_tokens_per_doc
+        self.session = requests.Session()
+
+    def score(self, query: str, documents: list[str]) -> list[float]:
+        if not documents:
+            return []
+        response = self.session.post(
+            self.endpoint,
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": self.model_name,
+                "query": query,
+                "documents": documents,
+                "top_n": len(documents),
+                "max_tokens_per_doc": self.max_tokens_per_doc,
+            },
+            timeout=self.timeout,
+        )
+        if response.status_code != 200:
+            raise RerankerError(
+                f"OpenRouter rerank request failed: HTTP {response.status_code} {response.text}"
+            )
+        payload = response.json()
+        results = payload.get("results")
+        if not isinstance(results, list):
+            raise RerankerError("OpenRouter rerank response is missing results.")
+        scores = [0.0] * len(documents)
+        for item in results:
+            if not isinstance(item, dict):
+                continue
+            index = item.get("index")
+            relevance_score = item.get("relevance_score")
+            if not isinstance(index, int) or index < 0 or index >= len(documents):
+                continue
+            if not isinstance(relevance_score, (int, float)):
+                continue
+            scores[index] = float(relevance_score)
+        return scores
+
+
 def resolve_reranker(
     *,
     use_reranker: bool,
@@ -281,6 +342,17 @@ def resolve_reranker(
         )
         return RerankerRuntime(
             provider="cohere",
+            model=reranker.model_name,
+            device="remote",
+            reranker=reranker,
+        )
+    if resolved_provider == "openrouter":
+        reranker = OpenRouterReranker(
+            api_key=api_key or "",
+            model=resolved_model or DEFAULT_OPENROUTER_RERANKER_MODEL,
+        )
+        return RerankerRuntime(
+            provider="openrouter",
             model=reranker.model_name,
             device="remote",
             reranker=reranker,

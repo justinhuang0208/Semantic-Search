@@ -17,6 +17,8 @@ from semsearch.rerankers import (
     CohereReranker,
     DEFAULT_COHERE_RERANKER_MODEL,
     DEFAULT_LOCAL_RERANKER_MODEL,
+    DEFAULT_OPENROUTER_RERANKER_MODEL,
+    OpenRouterReranker,
     QwenReranker,
     SubprocessReranker,
     resolve_reranker,
@@ -124,6 +126,36 @@ class EmbeddingsTests(unittest.TestCase):
         assert runtime is not None
         self.assertEqual(runtime.provider, "cohere")
         self.assertEqual(runtime.model, DEFAULT_COHERE_RERANKER_MODEL)
+        self.assertEqual(runtime.device, "remote")
+
+    def test_openrouter_reranker_maps_scores_back_to_original_order(self) -> None:
+        reranker = OpenRouterReranker(api_key="test-key")
+        response = mock.Mock(status_code=200)
+        response.json.return_value = {
+            "results": [
+                {"index": 1, "relevance_score": 0.95},
+                {"index": 0, "relevance_score": 0.25},
+            ]
+        }
+        with mock.patch.object(reranker.session, "post", return_value=response) as post_mock:
+            scores = reranker.score("query", ["doc-a", "doc-b"])
+
+        self.assertEqual(scores, [0.25, 0.95])
+        post_mock.assert_called_once()
+
+    def test_resolve_reranker_supports_openrouter_provider(self) -> None:
+        runtime = resolve_reranker(
+            use_reranker=True,
+            provider="openrouter",
+            model=None,
+            device="auto",
+            api_key="test-key",
+        )
+
+        self.assertIsNotNone(runtime)
+        assert runtime is not None
+        self.assertEqual(runtime.provider, "openrouter")
+        self.assertEqual(runtime.model, DEFAULT_OPENROUTER_RERANKER_MODEL)
         self.assertEqual(runtime.device, "remote")
 
     def test_qwen_reranker_seq_cls_formats_chat_prompt(self) -> None:

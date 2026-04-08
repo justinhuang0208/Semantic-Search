@@ -3,7 +3,7 @@
 本專案提供本機優先的語意搜尋系統，目標資料是卡片式 Markdown。
 
 - Embedding provider: OpenRouter or local Ollama
-- Optional reranker: local Qwen3 reranker via Transformers
+- Optional reranker: local Qwen3, Cohere API, or OpenRouter API
 - Default model (OpenRouter): `google/gemini-embedding-001`
 - Default model (Ollama): `qwen3-embedding:0.6b`
 - Retrieval: `search` (BM25), `vsearch` (vector), `query` (hybrid: `BM25 + Vector + RRF`)
@@ -159,6 +159,20 @@ semsearch query "non-blocking assignment 在跨週期傳遞的重點" \
 - Cohere provider 的預設模型是 `rerank-v4.0-fast`。
 - 目前只要有開 `--use-reranker` 且 provider 是 `cohere`，就必須設定 `COHERE_API_KEY`。
 
+使用 OpenRouter API reranker：
+
+```bash
+export OPENROUTER_API_KEY="<YOUR_OPENROUTER_API_KEY>"
+semsearch query "non-blocking assignment 在跨週期傳遞的重點" \
+  --use-local-embedding \
+  --use-reranker \
+  --reranker-provider openrouter
+```
+
+- `--reranker-provider openrouter` 會呼叫 OpenRouter `POST /api/v1/rerank`。
+- OpenRouter provider 的預設模型是 `cohere/rerank-v3.5`。
+- 目前只要有開 `--use-reranker` 且 provider 是 `openrouter`，就必須設定 `OPENROUTER_API_KEY`。
+
 ## 7. 評估
 
 ```bash
@@ -173,13 +187,15 @@ semsearch eval --golden tests/golden_queries.yaml --use-local-embedding
 - `--model` 可覆寫預設模型：
   - 未加 `--use-local-embedding`：預設 `google/gemini-embedding-001`
   - 加上 `--use-local-embedding`：預設 `qwen3-embedding:0.6b`
-- `--use-reranker` 會在召回後額外執行本地 Qwen reranker 重排。
-- `--reranker-provider` 支援 `local`、`cohere`。
+- `--use-reranker` 會在召回後額外執行指定 provider 的 reranker 重排。
+- `--reranker-provider` 支援 `local`、`cohere`、`openrouter`。
 - `--reranker-model` 預設會依 provider 決定：
   - `local`: `tomaarsen/Qwen3-Reranker-0.6B-seq-cls`
   - `cohere`: `rerank-v4.0-fast`
+  - `openrouter`: `cohere/rerank-v3.5`
 - `--reranker-device` 支援 `auto`、`mps`、`cpu`；Mac 建議使用 `auto`。
 - `COHERE_API_KEY` 只在 `--reranker-provider cohere` 時需要。
+- `OPENROUTER_API_KEY` 在 embedding 與 `--reranker-provider openrouter` 時都可使用。
 - `ingest/vsearch/query/eval` 需要使用與索引建立時一致的 provider/model。
 - 若設定不一致，系統會報錯並提示先用正確參數重新 `ingest`。
 

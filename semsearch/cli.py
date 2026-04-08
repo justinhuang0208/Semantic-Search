@@ -12,7 +12,11 @@ from .collections import DEFAULT_COLLECTIONS_PATH, CollectionRegistry, default_i
 from .embeddings import DEFAULT_OLLAMA_MODEL, DEFAULT_OPENROUTER_MODEL
 from .models import SearchResult
 from .pipeline import evaluate, ingest, last_ingested_at_metadata_key, search
-from .rerankers import DEFAULT_COHERE_RERANKER_MODEL, DEFAULT_LOCAL_RERANKER_MODEL
+from .rerankers import (
+    DEFAULT_COHERE_RERANKER_MODEL,
+    DEFAULT_LOCAL_RERANKER_MODEL,
+    DEFAULT_OPENROUTER_RERANKER_MODEL,
+)
 from .storage import Storage
 
 DEFAULT_SOURCE = Path("1 - Cards")
@@ -21,6 +25,7 @@ DEFAULT_FAISS_PATH = Path("data_index/semsearch.faiss")
 SOURCE_ENV_VAR = "SEMSEARCH_SOURCE"
 COLLECTIONS_ENV_VAR = "SEMSEARCH_COLLECTIONS"
 COHERE_API_KEY_ENV_VAR = "COHERE_API_KEY"
+OPENROUTER_API_KEY_ENV_VAR = "OPENROUTER_API_KEY"
 
 
 def _resolve_model(model: str | None, use_local_embedding: bool) -> str:
@@ -41,12 +46,19 @@ def _api_key(use_local_embedding: bool) -> str | None:
 
 
 def _reranker_api_key(use_reranker: bool, provider: str) -> str | None:
-    if not use_reranker or provider != "cohere":
+    if not use_reranker:
         return None
-    api_key = os.getenv(COHERE_API_KEY_ENV_VAR, "").strip()
-    if not api_key:
-        raise RuntimeError("COHERE_API_KEY is not set.")
-    return api_key
+    if provider == "cohere":
+        api_key = os.getenv(COHERE_API_KEY_ENV_VAR, "").strip()
+        if not api_key:
+            raise RuntimeError("COHERE_API_KEY is not set.")
+        return api_key
+    if provider == "openrouter":
+        api_key = os.getenv(OPENROUTER_API_KEY_ENV_VAR, "").strip()
+        if not api_key:
+            raise RuntimeError("OPENROUTER_API_KEY is not set.")
+        return api_key
+    return None
 
 
 def _default_source() -> str:
@@ -134,9 +146,9 @@ def _add_search_args(
     if include_reranker:
         parser.add_argument(
             "--reranker-provider",
-            choices=["local", "cohere"],
+            choices=["local", "cohere", "openrouter"],
             default="local",
-            help="Reranker provider. Use local for Transformers or cohere for API rerank.",
+            help="Reranker provider. Use local for Transformers, or cohere/openrouter for API rerank.",
         )
         parser.add_argument(
             "--use-reranker",
@@ -149,14 +161,15 @@ def _add_search_args(
             help=(
                 "Reranker model. Defaults to "
                 f"{DEFAULT_LOCAL_RERANKER_MODEL} for local or "
-                f"{DEFAULT_COHERE_RERANKER_MODEL} for cohere."
+                f"{DEFAULT_COHERE_RERANKER_MODEL} for cohere or "
+                f"{DEFAULT_OPENROUTER_RERANKER_MODEL} for openrouter."
             ),
         )
         parser.add_argument(
             "--rerank-top-k",
             type=int,
             default=20,
-            help="Number of top candidates to rerank locally.",
+            help="Number of top candidates to rerank.",
         )
         parser.add_argument(
             "--reranker-device",
